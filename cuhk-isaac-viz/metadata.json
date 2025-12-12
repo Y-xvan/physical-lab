@@ -1,0 +1,5 @@
+{
+  "name": "CUHK-SZ Isaac Lab Viz",
+  "description": "A visualization interface for Isaac Sim USD experiments featuring angular momentum demonstration.",
+  "requestFramePermissions": []
+}

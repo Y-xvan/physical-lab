@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>WebSocket Connection Test</title>
+    <style>
+        body {
+            font-family: monospace;
+            padding: 20px;
+            background: #1a1a1a;
+            color: #00ff00;
+        }
+        .log {
+            background: #000;
+            padding: 10px;
+            margin: 10px 0;
+            border: 1px solid #333;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+        button {
+            background: #00ff00;
+            color: #000;
+            border: none;
+            padding: 10px 20px;
+            margin: 5px;
+            cursor: pointer;
+            font-family: monospace;
+        }
+        button:hover {
+            background: #00cc00;
+        }
+        input {
+            background: #000;
+            color: #00ff00;
+            border: 1px solid #333;
+            padding: 10px;
+            font-family: monospace;
+            width: 400px;
+        }
+    </style>
+</head>
+<body>
+    <h1>🔌 Isaac Sim WebSocket Connection Test</h1>
+
+    <div>
+        <label>WebSocket URL:</label><br>
+        <input type="text" id="wsUrl" value="ws://10.20.5.3:30000">
+    </div>
+
+    <div style="margin: 20px 0;">
+        <button onclick="testConnection()">Test Connection</button>
+        <button onclick="startStream()">Start Stream</button>
+        <button onclick="requestFrame()">Request Single Frame</button>
+        <button onclick="clearLog()">Clear Log</button>
+    </div>
+
+    <div class="log" id="log"></div>
+
+    <div id="frameDisplay" style="margin-top: 20px;">
+        <h3>Latest Frame:</h3>
+        <img id="frame" style="max-width: 100%; border: 1px solid #333;">
+    </div>
+
+    <script>
+        let ws = null;
+        let frameCount = 0;
+
+        function log(message, type = 'info') {
+            const logDiv = document.getElementById('log');
+            const timestamp = new Date().toLocaleTimeString();
+            const colors = {
+                info: '#00ff00',
+                error: '#ff0000',
+                warn: '#ffff00',
+                success: '#00ffff'
+            };
+            logDiv.innerHTML += `<div style="color: ${colors[type] || '#00ff00'}">[${timestamp}] ${message}</div>`;
+            logDiv.scrollTop = logDiv.scrollHeight;
+            console.log(message);
+        }
+
+        function clearLog() {
+            document.getElementById('log').innerHTML = '';
+        }
+
+        function testConnection() {
+            const url = document.getElementById('wsUrl').value;
+            log(`🔌 Connecting to: ${url}`, 'info');
+
+            try {
+                if (ws && ws.readyState === WebSocket.OPEN) {
+                    log('⚠️ Already connected, closing existing connection', 'warn');
+                    ws.close();
+                }
+
+                ws = new WebSocket(url);
+
+                ws.onopen = () => {
+                    log('✅ WebSocket connection opened!', 'success');
+                };
+
+                ws.onmessage = (event) => {
+                    try {
+                        const data = JSON.parse(event.data);
+
+                        if (data.type === 'frame') {
+                            frameCount++;
+                            log(`📷 Frame received #${frameCount}`, 'success');
+                            // Display frame
+                            const img = document.getElementById('frame');
+                            img.src = `data:image/jpeg;base64,${data.data}`;
+                        } else {
+                            log(`📩 Received: ${data.type} - ${JSON.stringify(data).substring(0, 100)}...`, 'info');
+                        }
+                    } catch (e) {
+                        log(`❌ Failed to parse message: ${e.message}`, 'error');
+                    }
+                };
+
+                ws.onerror = (error) => {
+                    log(`🚨 WebSocket error: ${error}`, 'error');
+                    console.error('WebSocket error:', error);
+                };
+
+                ws.onclose = (event) => {
+                    log(`🔌 Connection closed: Code ${event.code}, Reason: ${event.reason || 'No reason'}`, 'warn');
+                };
+
+            } catch (error) {
+                log(`❌ Connection failed: ${error.message}`, 'error');
+            }
+        }
+
+        function startStream() {
+            if (!ws || ws.readyState !== WebSocket.OPEN) {
+                log('❌ Not connected! Click "Test Connection" first.', 'error');
+                return;
+            }
+
+            const message = {
+                type: 'start_stream',
+                fps: 15,
+                quality: 70
+            };
+
+            log(`📤 Sending: ${JSON.stringify(message)}`, 'info');
+            ws.send(JSON.stringify(message));
+        }
+
+        function requestFrame() {
+            if (!ws || ws.readyState !== WebSocket.OPEN) {
+                log('❌ Not connected! Click "Test Connection" first.', 'error');
+                return;
+            }
+
+            const message = {
+                type: 'request_frame'
+            };
+
+            log(`📤 Requesting single frame...`, 'info');
+            ws.send(JSON.stringify(message));
+        }
+
+        // Auto-connect on load
+        window.onload = () => {
+            log('🚀 Test page loaded. Click "Test Connection" to start.', 'info');
+        };
+    </script>
+</body>
+</html>
