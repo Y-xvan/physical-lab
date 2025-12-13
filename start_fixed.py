@@ -1,481 +1,194 @@
-"""
-修复版启动脚本 - WebRTC 服务器 + 自动视频修复
-使用 importlib 强制重新加载模块
+"""  
+启动脚本 - WebRTC 服务器  
+修复路径问题：强制指定项目根目录  
+"""  
+import sys  
+import asyncio  
+import carb  
+import omni.kit.app  
+import os  
+import importlib.util  
 
-在 Isaac Sim Script Editor 中运行此脚本
-"""
-import sys
-import asyncio
-import carb
-import omni.kit.app
-import omni.replicator.core as rep
-import omni.kit.viewport.utility as vp_util
-import os
-import shutil
-import importlib
-import importlib.util
+print("=" * 60)  
+print("🚀 启动 WebRTC 服务器（V3 全局变量修复版）")  
+print("=" * 60)  
 
-print("=" * 60)
-print("🚀 启动 WebRTC 服务器（修复版）")
-print("=" * 60)
+# ============================================================================  
+# 1. 🛑 关键修改：手动指定项目路径  
+# ============================================================================  
+PROJECT_ROOT = '/home/zhiren/IsaacLab'  
 
-# ============================================================================
-# 1. 停止旧服务器（如果有）
-# ============================================================================
-if 'server' in globals():
-    print("\n🛑 检测到旧服务器，正在停止...")
-    try:
-        old_server = globals()['server']
-        if hasattr(old_server, 'pcs'):
-            for pc in list(old_server.pcs):
-                try:
-                    pc.close()
-                except:
-                    pass
-            old_server.pcs.clear()
-        asyncio.ensure_future(old_server.stop())
-        del globals()['server']
-        print("✅ 旧服务器已停止")
-    except Exception as e:
-        print(f"⚠️ 停止旧服务器时出错: {e}")
+print(f"📂 指定项目目录: {PROJECT_ROOT}")  
 
-# ============================================================================
-# 2. 环境检查和路径设置
-# ============================================================================
-print("\n🔍 检查环境...")
+if not os.path.exists(PROJECT_ROOT):  
+    print(f"❌ 错误: 项目目录不存在: {PROJECT_ROOT}")  
+    raise FileNotFoundError(f"Project root not found: {PROJECT_ROOT}")  
 
-# 设置模块路径
-MODULE_DIR = '/home/zhiren/IsaacLab'
-MODULE_NAME = 'isaac_webrtc_server'
-MODULE_FILE = f'{MODULE_DIR}/{MODULE_NAME}.py'
+# ============================================================================  
+# 2. 全局服务器实例管理（修复版）
+# ============================================================================  
+# 使用模块级变量而非 globals() 字典操作
+# 通过一个容器类来持久化存储服务器引用
 
-print(f"   模块目录: {MODULE_DIR}")
-print(f"   模块文件: {MODULE_FILE}")
-print(f"   当前工作目录: {os.getcwd()}")
+class _ServerHolder:
+    """服务器实例持有者 - 解决 Script Editor 环境下的全局变量问题"""
+    instance = None
+    monitor_subscription = None
 
-# 检查文件是否存在
-if not os.path.exists(MODULE_FILE):
-    print(f"❌ 错误: 模块文件不存在: {MODULE_FILE}")
-    raise FileNotFoundError(f"Module file not found: {MODULE_FILE}")
+# 将 holder 注册到 sys.modules 中，确保跨脚本执行持久化
+_HOLDER_KEY = '__webrtc_server_holder__'
+if _HOLDER_KEY not in sys.modules:
+    sys.modules[_HOLDER_KEY] = _ServerHolder
+else:
+    _ServerHolder = sys.modules[_HOLDER_KEY]
 
-print(f"✅ 模块文件存在")
-print(f"   文件大小: {os.path.getsize(MODULE_FILE)} 字节")
-
-# ============================================================================
-# 3. 清除缓存
-# ============================================================================
-print("\n🧹 清除缓存...")
-
-# 清除 sys.modules
-if MODULE_NAME in sys.modules:
-    del sys.modules[MODULE_NAME]
-    print(f"   ✅ 已从 sys.modules 删除 {MODULE_NAME}")
-
-# 清除 __pycache__
-pycache_dir = f'{MODULE_DIR}/__pycache__'
-if os.path.exists(pycache_dir):
-    try:
-        shutil.rmtree(pycache_dir)
-        print(f"   ✅ 已删除缓存目录: {pycache_dir}")
-    except Exception as e:
-        print(f"   ⚠️ 删除缓存失败: {e}")
-
-# 清除 .pyc 文件
-pyc_file = f'{MODULE_DIR}/{MODULE_NAME}.pyc'
-if os.path.exists(pyc_file):
-    try:
-        os.remove(pyc_file)
-        print(f"   ✅ 已删除 .pyc 文件")
-    except Exception as e:
-        print(f"   ⚠️ 删除 .pyc 失败: {e}")
-
-# ============================================================================
-# 4. 使用 importlib 导入模块
-# ============================================================================
-print("\n📦 导入模块...")
-
-# 添加路径到 sys.path
-if MODULE_DIR not in sys.path:
-    sys.path.insert(0, MODULE_DIR)
-    print(f"   ✅ 已添加路径: {MODULE_DIR}")
-
-try:
-    # 使用 importlib.util 导入模块
-    spec = importlib.util.spec_from_file_location(MODULE_NAME, MODULE_FILE)
-    if spec is None:
-        raise ImportError(f"Cannot create module spec for {MODULE_FILE}")
-
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[MODULE_NAME] = module
-    spec.loader.exec_module(module)
-
-    print(f"   ✅ 成功导入 {MODULE_NAME}")
-
-    # 获取 WebRTCServer 类
-    WebRTCServer = module.WebRTCServer
-
-    # 验证类
-    import inspect
-    sig = inspect.signature(WebRTCServer.__init__)
-    params = list(sig.parameters.keys())
-    print(f"   ✅ WebRTCServer 参数: {params}")
-
-    if 'ws_port' not in params:
-        raise ValueError("WebRTCServer 缺少 ws_port 参数！请检查文件是否正确更新。")
-
-    print(f"   ✅ ws_port 参数存在")
-
-except Exception as e:
-    print(f"❌ 导入失败: {e}")
-    import traceback
-    traceback.print_exc()
-    raise
-
-# ============================================================================
-# 5. 创建服务器
-# ============================================================================
-print("\n🔧 创建 WebRTC + WebSocket 服务器...")
-try:
-    server = WebRTCServer(host="0.0.0.0", http_port=8080, ws_port=30000)
-    print("✅ 服务器创建成功")
-except Exception as e:
-    print(f"❌ 创建服务器失败: {e}")
-    import traceback
-    traceback.print_exc()
-    raise
-
-# ============================================================================
-# 6. Replicator 初始化函数（改进版）
-# ============================================================================
-async def init_replicator_improved(track, max_retries=3):
-    """
-    改进的 Replicator 初始化函数
-    - 多次重试
-    - 更详细的日志
-    - 更长的等待时间
-    """
-    print("\n" + "=" * 60)
-    print("🔧 初始化 Replicator（改进版）")
-    print("=" * 60)
-
-    retry_delay = 2.0
-
-    for attempt in range(1, max_retries + 1):
-        print(f"\n🔄 尝试 {attempt}/{max_retries}")
-        print("-" * 40)
-
+async def _cleanup_old_server():
+    """安全清理旧服务器实例"""
+    if _ServerHolder.instance is not None:
+        print("🛑 检测到旧服务器实例，正在清理...")
+        old_server = _ServerHolder.instance
         try:
-            # 等待足够时间让视口稳定
-            print(f"   ⏳ 等待 {retry_delay} 秒让 Isaac Sim 稳定...")
-            await asyncio.sleep(retry_delay)
-
-            # 获取当前相机
-            print("   🔍 获取视口...")
-            viewport = vp_util.get_active_viewport()
-            if not viewport:
-                print("   ❌ 无法获取视口")
-                if attempt < max_retries:
-                    continue
-                return False
-
-            print("   ✅ 视口获取成功")
-
-            print("   🔍 获取相机路径...")
-            camera_path = viewport.get_active_camera()
-            if not camera_path:
-                print("   ❌ 无法获取相机路径")
-                if attempt < max_retries:
-                    continue
-                return False
-
-            print(f"   ✅ 相机路径: {camera_path}")
-
-            # 清理旧资源
-            if hasattr(track, 'render_product') and track.render_product:
-                print("   🧹 清理旧的 Render Product...")
-                try:
-                    rep.destroy.render_product(track.render_product)
-                except:
-                    pass
-
-            # 创建 render product
-            print(f"   🎬 创建 Render Product ({track.width}x{track.height})...")
-            track.render_product = rep.create.render_product(
-                camera_path,
-                (track.width, track.height)
-            )
-            print("   ✅ Render product 创建成功")
-
-            # 创建 RGB annotator
-            print("   🎨 创建 RGB annotator...")
-            track.rgb_annotator = rep.AnnotatorRegistry.get_annotator("rgb")
-            track.rgb_annotator.attach([track.render_product])
-            print("   ✅ RGB annotator 创建成功")
-
-            # 启用 Replicator
-            track.use_replicator = True
-            print("   ✅ Replicator 已启用")
-
-            # 测试帧捕获
-            print("\n   🧪 测试帧捕获...")
-            await rep.orchestrator.step_async()
-            data = track.rgb_annotator.get_data()
-
-            if data is not None:
-                print(f"   ✅ 成功捕获测试帧: {data.shape}")
-                print(f"   数据范围: min={data.min()}, max={data.max()}")
-
-                if data.max() == 0:
-                    print("   ⚠️ 警告: 捕获的帧是全黑的（可能是场景问题）")
-                else:
-                    print("   ✅ 帧数据正常")
-
-                print("\n" + "=" * 60)
-                print("✅ Replicator 初始化成功！")
-                print("=" * 60)
-                return True
-            else:
-                print("   ❌ 帧捕获测试失败: 返回 None")
-                if attempt < max_retries:
-                    continue
-                return False
-
+            # 关闭所有 PeerConnection
+            if hasattr(old_server, 'pcs') and old_server.pcs:
+                print(f"   关闭 {len(old_server.pcs)} 个 WebRTC 连接...")
+                close_tasks = [pc.close() for pc in old_server.pcs]
+                await asyncio.gather(*close_tasks, return_exceptions=True)
+            
+            # 停止服务器
+            await old_server.stop()
+            print("   ✅ 旧服务器已停止")
         except Exception as e:
-            print(f"   ❌ 初始化失败: {e}")
-            import traceback
-            print(traceback.format_exc())
-            if attempt < max_retries:
-                continue
-            return False
-
-    return False
-
-# ============================================================================
-# 7. 启动和验证函数
-# ============================================================================
-async def start_and_verify():
-    """启动服务器并验证"""
-    print("\n🚀 启动服务器...")
-    try:
-        await server.start()
-        print("✅ 服务器启动完成！")
-
-        # 等待 Isaac Sim 稳定
-        print("\n⏳ 等待 Isaac Sim 稳定...")
-        await asyncio.sleep(2.0)
-
-        # 检查视频轨道
-        if not server.video_track:
-            print("\n" + "=" * 60)
-            print("📋 服务器状态：等待 WebRTC 连接")
-            print("=" * 60)
-            print("\n⚠️ 视频轨道尚未创建（这是正常的）")
-            print("   视频轨道将在首次 WebRTC 连接时创建")
-            print("\n📝 接下来的步骤：")
-            print("   1. 监控器已启动，会自动检测视频轨道创建")
-            print("   2. 在浏览器中打开前端并连接")
-            print("   3. 连接成功后，监控器会自动修复 Replicator")
-            print("=" * 60)
-            return True
-
-        # 如果视频轨道已存在（不太可能），直接初始化
-        track = server.video_track
-        print("\n📹 视频轨道信息:")
-        print(f"   分辨率: {track.width}x{track.height}")
-        print(f"   帧率: {track.fps}")
-        print(f"   使用 Replicator: {track.use_replicator}")
-
-        if not track.use_replicator:
-            print("\n⚠️ Replicator 未启用，开始初始化...")
-            success = await init_replicator_improved(track)
-            return success
-
-        return True
-
-    except Exception as e:
-        print(f"❌ 启动失败: {e}")
-        import traceback
-        print(traceback.format_exc())
-        return False
-
-# ============================================================================
-# 8. 执行启动任务
-# ============================================================================
-print("\n🔧 调度启动任务...")
-task = asyncio.ensure_future(start_and_verify())
-
-def check_startup():
-    if task.done():
+            print(f"   ⚠️ 清理时出错（可忽略）: {e}")
+        finally:
+            _ServerHolder.instance = None
+    
+    # 清理旧的监控订阅
+    if _ServerHolder.monitor_subscription is not None:
         try:
-            result = task.result()
-            if result:
-                print("\n" + "=" * 60)
-                print("✅ WebRTC + WebSocket 服务器已就绪！")
-                print("=" * 60)
-                print("\n📝 使用说明:")
-                print("   1. 在浏览器打开前端: http://<远程主机IP>:5173")
-                print("   2. 点击 'Connect' 连接服务器")
-                print("   3. 选择实验，场景会自动加载")
-                print("   4. 使用控制按钮控制仿真")
-                print("\n🌐 服务器信息:")
-                print(f"   HTTP/WebRTC: http://0.0.0.0:8080")
-                print(f"   WebSocket: ws://0.0.0.0:30000")
-                print("=" * 60)
+            _ServerHolder.monitor_subscription = None
+        except:
+            pass
 
-                # 启动后台监控（在启动成功后）
-                setup_video_monitor()
-            else:
-                print("\n" + "=" * 60)
-                print("❌ 服务器启动失败或验证未通过")
-                print("=" * 60)
-        except Exception as e:
-            print(f"❌ 启动任务异常: {e}")
-            import traceback
-            traceback.print_exc()
-        return False
-    return True
+# ============================================================================  
+# 3. 环境设置  
+# ============================================================================  
+if PROJECT_ROOT not in sys.path:  
+    sys.path.insert(0, PROJECT_ROOT)  
+    print(f"✅ 已添加路径到 sys.path")  
 
-app = omni.kit.app.get_app()
-sub = app.get_update_event_stream().create_subscription_to_pop(
-    lambda e: check_startup() if not task.done() else None
-)
+MODULE_NAME = 'isaac_webrtc_server'  
+MODULE_FILE = os.path.join(PROJECT_ROOT, f'{MODULE_NAME}.py')  
+CONFIG_FILE = os.path.join(PROJECT_ROOT, 'config.py')  
 
-print("\n💡 提示：服务器已设置为全局变量 'server'")
-print("=" * 60)
+if not os.path.exists(MODULE_FILE):  
+    raise FileNotFoundError(f"找不到 {MODULE_FILE}")  
 
-# ============================================================================
-# 9. 改进的视频轨道监控器
-# ============================================================================
-class ImprovedVideoTrackMonitor:
-    """改进的视频轨道监控器"""
+if not os.path.exists(CONFIG_FILE):  
+    raise FileNotFoundError(f"找不到 {CONFIG_FILE}")  
 
-    def __init__(self, server_instance):
-        self.server = server_instance
-        self.check_count = 0
-        self.max_checks = 600  # 检查 600 次（约60秒）
-        self.fixed = False
-        self.monitoring = False
-        self.last_log_time = 0
-        print("\n🔍 改进的视频轨道监控器已初始化")
+# ============================================================================  
+# 4. 强制重载模块  
+# ============================================================================  
+print("♻️ 重载模块...")  
 
-    def start(self):
-        """开始监控"""
-        if self.monitoring:
-            return
+try:  
+    # 清理已加载的模块缓存
+    for mod_name in ['config', MODULE_NAME]:
+        if mod_name in sys.modules:  
+            del sys.modules[mod_name]  
 
-        self.monitoring = True
-        print("✅ 开始监控视频轨道（每 3 帧检查一次）...")
-        print("   当浏览器连接并创建视频轨道时，会自动修复 Replicator")
+    # 导入 config  
+    import config  
+    print(f"   ✅ Config 加载成功")  
+    print(f"      视频设置: {config.VIDEO_WIDTH}x{config.VIDEO_HEIGHT}")  
+    print(f"      端口设置: HTTP={config.HTTP_PORT}, WS={config.WS_PORT}")  
 
-        app = omni.kit.app.get_app()
-        self.sub = app.get_update_event_stream().create_subscription_to_pop(
-            lambda e: self.check_and_fix()
-        )
+    # 动态导入 Server 模块  
+    spec = importlib.util.spec_from_file_location(MODULE_NAME, MODULE_FILE)  
+    module = importlib.util.module_from_spec(spec)  
+    sys.modules[MODULE_NAME] = module  
+    spec.loader.exec_module(module)  
+    WebRTCServer = module.WebRTCServer  
+    print(f"   ✅ Server 模块导入成功")  
 
-    def check_and_fix(self):
-        """检查并修复视频轨道"""
-        if self.fixed or not self.monitoring:
-            return True
+except Exception as e:  
+    print(f"❌ 模块导入失败: {e}")  
+    import traceback  
+    traceback.print_exc()  
+    raise  
 
-        self.check_count += 1
+# ============================================================================  
+# 5. 启动服务器  
+# ============================================================================  
+async def start_server():
+    """主启动流程"""
+    # 先清理旧实例
+    await _cleanup_old_server()
+    
+    print("\n🔧 正在初始化新服务器...")  
+    try:  
+        # 创建新服务器实例并存储到 holder
+        server = WebRTCServer(  
+            host=config.HTTP_HOST,  
+            http_port=config.HTTP_PORT,  
+            ws_port=config.WS_PORT  
+        )  
+        
+        await server.start()  
+        
+        # 保存到持久化 holder
+        _ServerHolder.instance = server
+        
+        print("\n" + "=" * 60)  
+        print("✅ WebRTC 服务器启动成功！")  
+        print("=" * 60)  
+        print(f"   WebRTC信令: http://{config.HTTP_HOST}:{config.HTTP_PORT}/offer")  
+        print(f"   WebSocket控制: ws://{config.HTTP_HOST}:{config.WS_PORT}/")  
+        print("=" * 60)  
+        
+        # 启动监控  
+        _setup_monitor(server)  
+        
+    except Exception as e:  
+        print(f"❌ 启动失败: {e}")  
+        import traceback  
+        traceback.print_exc()
+        _ServerHolder.instance = None
 
-        # 每 3 帧检查一次（更频繁）
-        if self.check_count % 3 != 0:
-            return True
+# ============================================================================  
+# 6. 轻量级监控  
+# ============================================================================  
+def _setup_monitor(server_instance):  
+    """状态监控"""  
+    check_count = [0]  # 使用列表来避免闭包问题
+    
+    def on_update(event):
+        check_count[0] += 1
+        # 每 10 秒打印一次状态 (假设 60fps, 600帧)  
+        if check_count[0] % 600 == 0:
+            if server_instance.video_track:  
+                track = server_instance.video_track  
+                if not track.use_replicator:  
+                    print(f"⚠️ [Monitor] Replicator 未启用 | 分辨率: {track.width}x{track.height}")
+    
+    app = omni.kit.app.get_app()  
+    subscription = app.get_update_event_stream().create_subscription_to_pop(on_update)
+    _ServerHolder.monitor_subscription = subscription
+    print("👀 状态监控已挂载")  
 
-        try:
-            # 每 300 帧（约10秒）输出一次进度
-            import time
-            current_time = time.time()
-            if current_time - self.last_log_time >= 10:
-                elapsed = self.check_count // 30
-                print(f"   ⏳ 等待视频轨道创建... ({elapsed}秒)")
-                self.last_log_time = current_time
+# ============================================================================  
+# 7. 提供便捷的停止函数
+# ============================================================================  
+async def stop_server():
+    """手动停止服务器的便捷函数"""
+    await _cleanup_old_server()
+    print("✅ 服务器已停止")
 
-            # 检查视频轨道
-            if self.server.video_track is not None:
-                track = self.server.video_track
+def get_server():
+    """获取当前服务器实例"""
+    return _ServerHolder.instance
 
-                print(f"\n" + "=" * 60)
-                print(f"✅ 检测到视频轨道！")
-                print(f"   分辨率: {track.width}x{track.height}")
-                print(f"   Replicator 状态: {track.use_replicator}")
-                print("=" * 60)
-
-                if not track.use_replicator:
-                    print("\n🔧 Replicator 未启用，开始自动修复...")
-
-                    # 创建修复任务
-                    fix_task = asyncio.ensure_future(init_replicator_improved(track))
-
-                    # 等待修复完成
-                    def check_fix():
-                        if fix_task.done():
-                            try:
-                                success = fix_task.result()
-                                if success:
-                                    print("\n" + "=" * 60)
-                                    print("✅ 自动修复成功！")
-                                    print("   视频流现在应该可以正常工作了")
-                                    print("   你可以在前端看到视频画面")
-                                    print("=" * 60)
-                                else:
-                                    print("\n" + "=" * 60)
-                                    print("⚠️ 自动修复失败")
-                                    print("   请检查日志查看具体错误")
-                                    print("=" * 60)
-                            except Exception as e:
-                                print(f"❌ 修复任务异常: {e}")
-
-                            self.fixed = True
-                            self.monitoring = False
-                            return False
-                        return True
-
-                    # 创建检查任务的订阅
-                    app = omni.kit.app.get_app()
-                    fix_sub = app.get_update_event_stream().create_subscription_to_pop(
-                        lambda e: check_fix()
-                    )
-
-                    # 停止当前监控
-                    return False
-                else:
-                    print("✅ Replicator 已启用，无需修复")
-                    print("   视频流应该已经可以正常工作了！")
-                    self.fixed = True
-                    self.monitoring = False
-                    return False
-
-            # 超时检查
-            if self.check_count >= self.max_checks * 3:
-                print("\n" + "=" * 60)
-                print("⚠️ 监控超时（60秒）")
-                print("   视频轨道可能尚未创建")
-                print("\n可能的原因：")
-                print("   1. 前端还没有连接到服务器")
-                print("   2. WebRTC 连接建立失败")
-                print("\n建议：")
-                print("   1. 检查前端是否成功连接")
-                print("   2. 检查浏览器控制台是否有错误")
-                print("   3. 确认服务器地址正确")
-                print("=" * 60)
-                self.monitoring = False
-                return False
-
-        except Exception as e:
-            print(f"⚠️ 监控出错: {e}")
-            import traceback
-            print(traceback.format_exc())
-
-        return True
-
-# 创建全局监控器实例
-video_monitor = ImprovedVideoTrackMonitor(server)
-
-def setup_video_monitor():
-    """设置视频监控器（在服务器启动成功后调用）"""
-    video_monitor.start()
-
-print("✅ 改进的视频轨道监控器已准备就绪")
-print("=" * 60)
+# ============================================================================  
+# 8. 执行启动
+# ============================================================================  
+asyncio.ensure_future(start_server())

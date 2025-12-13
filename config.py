@@ -13,11 +13,11 @@ PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 
 # Camera配置脚本目录
 CAMERA_SCRIPT_DIR = os.path.join(PROJECT_ROOT, "camera")
-
+PHY_USD_PATH = "/home/zhiren/IsaaclabAssets/experiment/exp.usd"
 # USD场景文件路径（优先使用环境变量）
 DEFAULT_USD_PATH = os.getenv(
     "PHY_USD_PATH",
-    os.path.join(PROJECT_ROOT, "assets", "exp.usd")  # 使用相对路径作为默认值
+    os.path.join(PROJECT_ROOT, "assets", "exp.usd")
 )
 
 # 日志目录
@@ -35,7 +35,7 @@ HTTP_PORT = 8080
 
 # WebSocket服务器
 WS_HOST = "0.0.0.0"
-WS_PORT = 30000
+WS_PORT = 30000  # 确保 extension.py 已删除，否则会冲突
 
 
 # ============================================================
@@ -54,77 +54,25 @@ VIDEO_FPS = 30
 # 监控配置
 # ============================================================
 
-# 仿真状态监控间隔（秒）
-SIMULATION_CHECK_INTERVAL = 0.1  # 从30Hz降低到10Hz
-
-# 状态广播间隔（秒）
+SIMULATION_CHECK_INTERVAL = 0.1
 STATE_BROADCAST_INTERVAL = 2.0
-
-# 遥测数据广播间隔（秒）
-TELEMETRY_BROADCAST_INTERVAL = 0.333  # 3Hz
-
+TELEMETRY_BROADCAST_INTERVAL = 0.333
+DEBOUNCE_WINDOW = 0.5
 
 # ============================================================
-# 防抖配置
+# 实验1配置
 # ============================================================
 
-# 命令防抖时间窗口（秒）
-DEBOUNCE_WINDOW = 0.5  # 从0.3秒增加到0.5秒
-
-
-# ============================================================
-# 日志配置
-# ============================================================
-
-# 错误日志重复抑制
-# 相同错误在多少秒内只记录一次
-ERROR_LOG_SUPPRESS_INTERVAL = 10.0
-
-# 每种错误类型的最大日志计数（超过后降低日志级别）
-ERROR_LOG_MAX_COUNT = 100
-
-
-# ============================================================
-# 相机配置
-# ============================================================
-
-# 默认相机参数
-DEFAULT_CAMERA_DISTANCE = 10.0
-DEFAULT_CAMERA_AZIMUTH = 45.0
-DEFAULT_CAMERA_ELEVATION = 30.0
-
-
-# ============================================================
-# 实验1配置（角动量守恒）
-# ============================================================
-
-EXP1_DEFAULT_DISK_MASS = 1.0  # kg
-EXP1_DEFAULT_RING_MASS = 1.0  # kg
-EXP1_DEFAULT_DISK_RADIUS = 0.5  # m
-EXP1_DEFAULT_RING_RADIUS = 0.5  # m
-EXP1_DEFAULT_INITIAL_VELOCITY = 0.0  # rad/s
-
+EXP1_DEFAULT_DISK_MASS = 1.0
+EXP1_DEFAULT_RING_MASS = 1.0
+EXP1_DEFAULT_DISK_RADIUS = 0.5
+EXP1_DEFAULT_RING_RADIUS = 0.5
+EXP1_DEFAULT_INITIAL_VELOCITY = 0.0
 
 # ============================================================
 # 性能配置
 # ============================================================
 
-# 帧捕获超时（秒）
 FRAME_CAPTURE_TIMEOUT = 0.2
-
-# Replicator初始化重试次数
 REPLICATOR_INIT_MAX_RETRIES = 3
-
-# Replicator初始化重试延迟（秒）
 REPLICATOR_INIT_RETRY_DELAY = 1.0
-
-
-# ============================================================
-# 开发/调试配置
-# ============================================================
-
-# 是否启用详细日志
-VERBOSE_LOGGING = os.getenv("PHY_VERBOSE", "false").lower() == "true"
-
-# 是否启用性能分析
-ENABLE_PROFILING = os.getenv("PHY_PROFILING", "false").lower() == "true"
