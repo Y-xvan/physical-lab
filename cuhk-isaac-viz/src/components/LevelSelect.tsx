@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { PlayCircle, RotateCcw, RotateCw, Activity, Target, Circle, ArrowRightLeft, Volume2 } from 'lucide-react';
 import { EXPERIMENTS } from '../experiments';
-import xiaohuiLogo from './xiaohui.jpg';
+import xiaohuiLogo from './xiaohui.png';
 import { isaacService } from '../services/isaacService';
 
 interface LevelSelectProps {
@@ -143,13 +143,11 @@ const LevelSelect: React.FC<LevelSelectProps> = ({ onSelectLevel, onBack }) => {
           </div>
         </div>
         <div className="text-right hidden md:block">
-          <div className="inline-block p-2 bg-white/60 backdrop-blur-sm rounded-xl border-2 border-gray-200/50 shadow-sm transition-all duration-300 hover:bg-white/80 hover:border-blue-300/50">
-            <img
-              src={xiaohuiLogo}
-              alt="CUHK(SZ)"
-              className="h-24 w-auto object-contain rounded-lg opacity-90 hover:opacity-100 transition-opacity duration-300"
-            />
-          </div>
+          <img
+            src={xiaohuiLogo}
+            alt="CUHK(SZ)"
+            className="h-12 w-auto object-contain opacity-90 hover:opacity-100 transition-opacity duration-300"
+          />
         </div>
       </header>
 

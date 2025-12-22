@@ -1,7 +1,7 @@
-import React, { useEffect, useState, useCallback } from 'react';
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
+import React, { useEffect, useState, useCallback, useMemo } from 'react';
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Brush } from 'recharts';
 import {
-  ArrowLeft, Activity, RotateCcw
+  ArrowLeft, Activity
 } from 'lucide-react';
 import { isaacService, type SimulationState } from '../services/isaacService';
 import { ConnectionStatus, type TelemetryData, type ExperimentConfig } from '../types';
@@ -28,14 +28,29 @@ const ExperimentView: React.FC<ExperimentViewProps> = ({ config, onBack }) => {
     step: 0
   });
 
-  // ========== 仿真控制 ==========
-
-  const handleResetSimulation = useCallback(() => {
-    isaacService.resetSimulation();
-  }, []);
+  // 保存的历史数据记录
+  const [savedRuns, setSavedRuns] = useState<{id: number, data: TelemetryData[], label: string}[]>([]);
+  const [selectedRunId, setSelectedRunId] = useState<number | null>(null); // null = 显示实时数据
+  const [runCounter, setRunCounter] = useState(1);
 
   // ========== 控制项状态 ==========
-  const [controlValues, setControlValues] = useState<Record<string, number>>({});
+  // 初始化控制值为默认值
+  const initialControlValues = useMemo(() => {
+    const values: Record<string, number> = {};
+    config.controls?.forEach(control => {
+      if (control.type === 'slider' && control.defaultValue !== undefined) {
+        values[control.id] = control.defaultValue as number;
+      }
+    });
+    return values;
+  }, [config.controls]);
+  
+  const [controlValues, setControlValues] = useState<Record<string, number>>(initialControlValues);
+
+  // 当 config 变化时重置控制值
+  useEffect(() => {
+    setControlValues(initialControlValues);
+  }, [initialControlValues]);
 
   // ========== 控制项处理 ==========
 
@@ -49,14 +64,27 @@ const ExperimentView: React.FC<ExperimentViewProps> = ({ config, onBack }) => {
     if (control) {
       // 特殊处理仿真控制命令
       if (control.command === 'start_simulation') {
+        // 点击 Run：清空当前数据，开始新的记录
+        setDataHistory([]);
+        setSelectedRunId(null); // 切换到实时数据
         isaacService.startSimulation();
       } else if (control.command === 'reset_env') {
+        // 点击 Reset：保存当前数据到历史记录
+        if (dataHistory.length > 0) {
+          const newRun = {
+            id: runCounter,
+            data: [...dataHistory],
+            label: `Run ${runCounter} (M=${controlValues['disk_mass']?.toFixed(1) || '1.0'}kg)`
+          };
+          setSavedRuns(prev => [...prev, newRun]);
+          setRunCounter(prev => prev + 1);
+        }
         isaacService.resetSimulation();
       } else {
         isaacService.sendCommand(control.command, value);
       }
     }
-  }, [config.controls]);
+  }, [config.controls, dataHistory, runCounter, controlValues]);
 
   // ========== 初始化 ==========
 
@@ -91,12 +119,20 @@ const ExperimentView: React.FC<ExperimentViewProps> = ({ config, onBack }) => {
         setLoadingProgress(40);
 
         // 进入实验（只切换相机和reset物理状态，不重新加载USD）
-        console.log('🚀 Entering experiment (switching camera and resetting physics)...');
+        console.log(' Entering experiment (switching camera and resetting physics)...');
         const entered = await isaacService.enterExperiment(config.experimentNumber);
 
         if (entered) {
           console.log('✅ Experiment entered with camera config');
           setLoadingProgress(80);
+
+          // 发送所有 slider 控件的默认值到后端
+          config.controls?.forEach(control => {
+            if (control.type === 'slider' && control.defaultValue !== undefined && control.command) {
+              console.log(` Sending default value for ${control.id}: ${control.defaultValue}`);
+              isaacService.sendCommand(control.command, control.defaultValue as number);
+            }
+          });
 
           // 加载完成后，立即查询仿真状态
           setTimeout(() => {
@@ -124,11 +160,28 @@ const ExperimentView: React.FC<ExperimentViewProps> = ({ config, onBack }) => {
     // 执行初始化
     initExperiment();
 
-    // 订阅遥测数据
+    // 订阅遥测数据（带平滑处理）
     const unsubscribeTelemetry = isaacService.onTelemetry((data) => {
       setDataHistory(prev => {
-        const newData = [...prev, data];
-        if (newData.length > 60) return newData.slice(newData.length - 60);
+        // 增加历史数据长度到 120 点，让曲线更完整
+        const maxLength = 120;
+        
+        // 如果有足够的历史数据，应用指数移动平均平滑
+        let smoothedData = { ...data };
+        if (prev.length > 0) {
+          const lastData = prev[prev.length - 1];
+          const smoothFactor = 0.3; // 平滑因子，越小越平滑 (0.1-0.5)
+          
+          // 对数值类型的字段进行平滑处理
+          Object.keys(data).forEach(key => {
+            if (typeof data[key] === 'number' && typeof lastData[key] === 'number' && key !== 'timestamp') {
+              smoothedData[key] = lastData[key] * (1 - smoothFactor) + data[key] * smoothFactor;
+            }
+          });
+        }
+        
+        const newData = [...prev, smoothedData];
+        if (newData.length > maxLength) return newData.slice(newData.length - maxLength);
         return newData;
       });
     });
@@ -150,11 +203,15 @@ const ExperimentView: React.FC<ExperimentViewProps> = ({ config, onBack }) => {
       unsubscribeSimState();
       clearInterval(statePollingInterval);
       // 不断开连接，保持WebSocket在线
-      console.log('🔄 ExperimentView unmounting, keeping connection alive');
+      console.log(' ExperimentView unmounting, keeping connection alive');
     };
   }, [config.id, config.experimentNumber]);
 
-  const currentData = dataHistory.length > 0 ? dataHistory[dataHistory.length - 1] : null;
+  // 显示的数据：实时模式显示最新数据，历史模式显示保存数据的最后一个点
+  const displayData = selectedRunId === null 
+    ? dataHistory 
+    : (savedRuns.find(r => r.id === selectedRunId)?.data || []);
+  const currentData = displayData.length > 0 ? displayData[displayData.length - 1] : null;
   const isConnected = status === ConnectionStatus.CONNECTED;
 
   // 加载界面
@@ -249,23 +306,45 @@ const ExperimentView: React.FC<ExperimentViewProps> = ({ config, onBack }) => {
           <div className="h-6 w-px bg-gray-300 mx-2"></div>
           <div>
             <h2 className="font-bold text-sm tracking-widest text-blue-600 uppercase">{config.title}</h2>
-            <div className="text-[10px] text-gray-500 font-mono">{config.usdPath}</div>
+            <div className="text-[10px] text-gray-500 font-mono">Experiment {config.experimentNumber}</div>
           </div>
         </div>
 
         <div className="flex items-center gap-3">
-          {/* ========== 仿真控制按钮 ========== */}
-          <div className="flex items-center gap-1 border-2 border-gray-300 rounded-lg p-1 shadow-sm bg-white">
-            {/* 重置 */}
-            <button
-              onClick={handleResetSimulation}
-              className="p-2 rounded hover:bg-purple-100 text-gray-700 hover:text-purple-600 transition-colors flex items-center gap-2"
-              title="Reset Simulation"
-            >
-              <RotateCcw size={14} />
-              <span className="text-xs font-mono font-semibold">RESET</span>
-            </button>
-          </div>
+          {/* Run 和 Reset 按钮 */}
+          <button
+            onClick={() => {
+              setDataHistory([]);
+              setSelectedRunId(null);
+              isaacService.startSimulation();
+            }}
+            className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white text-sm font-bold rounded-lg transition-all shadow-md hover:shadow-lg flex items-center gap-2"
+          >
+            <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+              <path d="M6.3 2.841A1.5 1.5 0 004 4.11V15.89a1.5 1.5 0 002.3 1.269l9.344-5.89a1.5 1.5 0 000-2.538L6.3 2.84z" />
+            </svg>
+            RUN
+          </button>
+          <button
+            onClick={() => {
+              if (dataHistory.length > 0) {
+                const newRun = {
+                  id: runCounter,
+                  data: [...dataHistory],
+                  label: `Run ${runCounter}`
+                };
+                setSavedRuns(prev => [...prev, newRun]);
+                setRunCounter(prev => prev + 1);
+              }
+              isaacService.resetSimulation();
+            }}
+            className="px-4 py-2 bg-orange-500 hover:bg-orange-600 text-white text-sm font-bold rounded-lg transition-all shadow-md hover:shadow-lg flex items-center gap-2"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+            </svg>
+            RESET
+          </button>
 
           <div className="h-6 w-px bg-gray-300"></div>
 
@@ -284,11 +363,11 @@ const ExperimentView: React.FC<ExperimentViewProps> = ({ config, onBack }) => {
       </div>
 
       <div className="flex-1 flex overflow-hidden relative">
-        {/* Left: 3D Viewport with Ultra Fast Streaming */}
-        <div className="flex-[2] relative bg-gray-100 border-r border-gray-200 flex flex-col shadow-inner">
+        {/* Full Screen: 3D Viewport with WebRTC Streaming */}
+        <div className="flex-1 relative bg-gray-100 flex flex-col">
           <div className="absolute inset-0 bg-[linear-gradient(rgba(100,116,139,0.1)_1px,transparent_1px),linear-gradient(90deg,rgba(100,116,139,0.1)_1px,transparent_1px)] bg-[size:40px_40px] opacity-30 pointer-events-none"></div>
 
-          {/* ========== WebRTC VIDEO STREAM ========== */}
+          {/* ========== WebRTC VIDEO STREAM (全屏) ========== */}
           <div className="flex-1 relative z-10">
             {/* 使用WebRTC实现高性能视频流 */}
             <WebRTCIsaacViewer
@@ -297,19 +376,82 @@ const ExperimentView: React.FC<ExperimentViewProps> = ({ config, onBack }) => {
               className="w-full h-full"
             />
 
-            {/* 如果想使用旧的JPEG流，取消注释下面的代码并注释掉上面的WebRTC组件 */}
-            {/* <UltraFastIsaacViewer
-              wsUrl={isaacService.getBackendUrl()}
-              usdPath={config.usdPath}
-              initialWidth={640}
-              initialHeight={480}
-              initialQuality={60}
-              className="w-full h-full"
-            /> */}
+            {/* ========== 左上角悬浮速度曲线窗口 ========== */}
+            <div className="absolute top-4 left-4 w-[420px] bg-white/90 backdrop-blur-md rounded-xl shadow-2xl border border-gray-200/50 overflow-hidden z-20">
+              {/* 标题栏 */}
+              <div className="flex items-center justify-between px-4 py-2.5 bg-gradient-to-r from-blue-600 to-purple-600">
+                <div className="flex items-center gap-2 text-white text-xs font-bold uppercase tracking-wider">
+                  <Activity size={14} />
+                  <span>Velocity Telemetry</span>
+                </div>
+                {/* 实时数据显示 */}
+                <div className="flex gap-3">
+                  {config.chartConfig.map((chart) => (
+                    <div key={chart.key} className="flex items-center gap-1.5">
+                      <div className="w-2 h-2 rounded-full" style={{ backgroundColor: chart.color }}></div>
+                      <span className="text-white/90 text-[10px] font-mono">
+                        {chart.label}: {currentData ? (currentData[chart.key]?.toFixed(2) ?? '--') : '--'}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+              
+              {/* 图表区域 */}
+              <div className="h-[180px] p-2 bg-white/50">
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={dataHistory}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" vertical={false} />
+                    <XAxis dataKey="timestamp" hide />
+                    <YAxis 
+                      yAxisId="left" 
+                      stroke="#6b7280" 
+                      fontSize={9} 
+                      tickFormatter={(val) => val.toFixed(1)}
+                      width={35}
+                    />
+                    <YAxis 
+                      yAxisId="right" 
+                      orientation="right" 
+                      stroke="#6b7280" 
+                      fontSize={9} 
+                      tickFormatter={(val) => val.toFixed(1)}
+                      width={35}
+                    />
+                    <Tooltip
+                      contentStyle={{ 
+                        backgroundColor: 'rgba(255,255,255,0.95)', 
+                        border: '1px solid #e5e7eb', 
+                        fontSize: '11px', 
+                        borderRadius: '8px', 
+                        boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
+                        padding: '8px 12px'
+                      }}
+                      labelStyle={{ display: 'none' }}
+                      itemStyle={{ color: '#374151', padding: '2px 0' }}
+                    />
+                    {config.chartConfig.map(chart => (
+                      <Line
+                        key={chart.key}
+                        yAxisId={chart.yAxisId}
+                        type="monotone"
+                        dataKey={chart.key}
+                        stroke={chart.color}
+                        strokeWidth={2}
+                        dot={false}
+                        isAnimationActive={false}
+                      />
+                    ))}
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
           </div>
         </div>
 
-        {/* Right: Data Telemetry & Controls */}
+        {/* ========== 右侧操作面板 - 暂时隐藏 ========== */}
+        {/* 如需恢复，将下面的 false 改为 true */}
+        {false && (
         <div className="flex-1 bg-white/90 backdrop-blur-sm border-l border-gray-200 flex flex-col min-w-[350px] shadow-lg overflow-y-auto">
           <div className="grid grid-cols-2 gap-px bg-gray-200 border-b border-gray-200">
             {config.chartConfig.map((chart) => (
@@ -346,7 +488,7 @@ const ExperimentView: React.FC<ExperimentViewProps> = ({ config, onBack }) => {
                           min={control.min}
                           max={control.max}
                           step={control.step}
-                          defaultValue={control.defaultValue as number}
+                          value={currentValue}
                           onChange={(e) => handleControlChange(control.id, parseFloat(e.target.value))}
                           className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer slider accent-blue-600"
                         />
@@ -387,7 +529,7 @@ const ExperimentView: React.FC<ExperimentViewProps> = ({ config, onBack }) => {
             </div>
             <div className="flex-1 w-full min-h-[200px]">
               <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={dataHistory}>
+                <LineChart data={selectedRunId === null ? dataHistory : (savedRuns.find(r => r.id === selectedRunId)?.data || [])}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#d1d5db" vertical={false} />
                   <XAxis dataKey="timestamp" hide />
                   <YAxis yAxisId="left" stroke="#6b7280" fontSize={10} tickFormatter={(val) => val.toFixed(1)} />
@@ -409,11 +551,60 @@ const ExperimentView: React.FC<ExperimentViewProps> = ({ config, onBack }) => {
                       isAnimationActive={false}
                     />
                   ))}
+                  {/* 时间线滑块 - 拖动查看数据（只在查看保存的数据或有足够数据时显示） */}
+                  {displayData.length > 10 && (
+                    <Brush 
+                      dataKey="timestamp" 
+                      height={25} 
+                      stroke="#6366f1"
+                      fill="#f3f4f6"
+                      tickFormatter={() => ''}
+                    />
+                  )}
                 </LineChart>
               </ResponsiveContainer>
             </div>
+            
+            {/* 保存的运行记录选择器 */}
+            {savedRuns.length > 0 && (
+              <div className="border-t border-gray-200 p-3 bg-gray-50">
+                <div className="text-gray-700 text-xs font-bold mb-2 uppercase tracking-wider">Saved Runs</div>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    onClick={() => setSelectedRunId(null)}
+                    className={`px-3 py-1.5 text-xs font-mono rounded-lg transition-colors ${
+                      selectedRunId === null 
+                        ? 'bg-blue-600 text-white' 
+                        : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+                    }`}
+                  >
+                    Live
+                  </button>
+                  {savedRuns.map(run => (
+                    <button
+                      key={run.id}
+                      onClick={() => setSelectedRunId(run.id)}
+                      className={`px-3 py-1.5 text-xs font-mono rounded-lg transition-colors ${
+                        selectedRunId === run.id 
+                          ? 'bg-purple-600 text-white' 
+                          : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+                      }`}
+                    >
+                      {run.label}
+                    </button>
+                  ))}
+                  <button
+                    onClick={() => setSavedRuns([])}
+                    className="px-3 py-1.5 text-xs font-mono rounded-lg bg-red-100 text-red-600 hover:bg-red-200 transition-colors"
+                  >
+                    Clear All
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
+        )}
       </div>
     </div>
   );

@@ -326,8 +326,18 @@ class IsaacService {
 
     if (this.ws && this.status === ConnectionStatus.CONNECTED) {
       // 发送正确的消息格式
-      // 如果 payload 存在，合并到消息中；否则只发送 type
-      const message = payload ? { type: command, ...payload } : { type: command };
+      // 如果 payload 是数字或布尔值，包装成 { value: payload }
+      // 如果 payload 是对象，展开它
+      let message: any;
+      if (payload === undefined || payload === null) {
+        message = { type: command };
+      } else if (typeof payload === 'number' || typeof payload === 'boolean') {
+        message = { type: command, value: payload };
+      } else if (typeof payload === 'object') {
+        message = { type: command, ...payload };
+      } else {
+        message = { type: command, value: payload };
+      }
       this.ws.send(JSON.stringify(message));
     }
   }

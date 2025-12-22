@@ -598,9 +598,9 @@ const Landing: React.FC<LandingProps> = ({ onEnter }) => {
       <div className="absolute bottom-0 left-0 right-0 pb-6 z-20">
         {/* 物理常数装饰 */}
         <div className="flex justify-center gap-8 mb-3 text-[10px] text-cyan-400/40 font-mono">
-          <span className="animate-pulse" style={{ animationDelay: '0s', animationDuration: '3s' }}>c = 3×10⁸ m/s</span>
-          <span className="animate-pulse" style={{ animationDelay: '0.5s', animationDuration: '3s' }}>G = 6.67×10⁻¹¹</span>
-          <span className="animate-pulse" style={{ animationDelay: '1s', animationDuration: '3s' }}>h = 6.626×10⁻³⁴</span>
+          <span className="animate-pulse" style={{ animationDelay: '0s', animationDuration: '3s' }}>c = 3×10<sup>8</sup> m/s</span>
+          <span className="animate-pulse" style={{ animationDelay: '0.5s', animationDuration: '3s' }}>G = 6.67×10<sup>-11</sup></span>
+          <span className="animate-pulse" style={{ animationDelay: '1s', animationDuration: '3s' }}>h = 6.626×10<sup>-34</sup></span>
         </div>
 
         {/* 标语 */}

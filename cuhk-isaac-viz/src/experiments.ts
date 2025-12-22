@@ -11,15 +11,15 @@ export const EXPERIMENTS: ExperimentConfig[] = [
     difficulty: 'Easy',
     isLocked: false,
     controls: [
-      { id: 'disk_mass', label: 'Disk Mass (kg)', type: 'slider', min: 0.1, max: 5, step: 0.1, defaultValue: 1.0, command: 'set_disk_mass' },
-      { id: 'ring_mass', label: 'Ring Mass (kg)', type: 'slider', min: 0.1, max: 5, step: 0.1, defaultValue: 1.0, command: 'set_ring_mass' },
-      { id: 'initial_velocity', label: 'Initial Angular Velocity (rad/s)', type: 'slider', min: 0, max: 10, step: 0.5, defaultValue: 0, command: 'set_initial_velocity' },
-      { id: 'run', label: 'Run', type: 'button', command: 'start_simulation' }
+      { id: 'disk_mass', label: 'Disk (Lower) Mass (kg)', type: 'slider', min: 0.1, max: 5, step: 0.1, defaultValue: 1.0, command: 'set_disk_mass' },
+      { id: 'ring_mass', label: 'Disk (Upper) Mass (kg)', type: 'slider', min: 0.1, max: 5, step: 0.1, defaultValue: 1.0, command: 'set_ring_mass' },
+      { id: 'initial_velocity', label: 'Initial Angular Velocity (rad/s)', type: 'slider', min: 0, max: 10, step: 0.5, defaultValue: 5.0, command: 'set_initial_velocity' },
+      { id: 'run', label: 'Run', type: 'button', command: 'start_simulation' },
+      { id: 'reset', label: 'Reset', type: 'button', command: 'reset_env' }
     ],
     chartConfig: [
-      { key: 'disk_angular_velocity', color: '#00f3ff', label: 'Disk ω (rad/s)', yAxisId: 'left' },
-      { key: 'ring_angular_velocity', color: '#10b981', label: 'Ring ω (rad/s)', yAxisId: 'left' },
-      { key: 'angular_momentum', color: '#D4AF37', label: 'Angular Momentum', yAxisId: 'right' }
+      { key: 'disk_angular_velocity', color: '#00f3ff', label: 'Disk (Lower) ω (rad/s)', yAxisId: 'left' },
+      { key: 'ring_angular_velocity', color: '#10b981', label: 'Disk (Upper) ω (rad/s)', yAxisId: 'left' }
     ]
   },
   {
