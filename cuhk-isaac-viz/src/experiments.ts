@@ -32,14 +32,18 @@ export const EXPERIMENTS: ExperimentConfig[] = [
     difficulty: 'Easy',
     isLocked: false,
     controls: [
-      { id: 'length', label: 'Length (m)', type: 'slider', min: 0.5, max: 3, step: 0.1, defaultValue: 1.0, command: 'set_length' },
-      { id: 'angle', label: 'Initial Angle (°)', type: 'slider', min: 10, max: 170, step: 5, defaultValue: 45, command: 'set_angle' },
+      { id: 'initial_angle', label: 'Initial Angle (°)', type: 'slider', min: 10, max: 170, step: 5, defaultValue: 90, command: 'set_initial_angle' },
+      { id: 'mass1', label: 'Cylinder_01 Mass (kg)', type: 'slider', min: 0.1, max: 5, step: 0.1, defaultValue: 1.0, command: 'set_exp2_mass1' },
+      { id: 'mass2', label: 'Cylinder_02 Mass (kg)', type: 'slider', min: 0.1, max: 5, step: 0.1, defaultValue: 1.0, command: 'set_exp2_mass2' },
       { id: 'run', label: 'Run', type: 'button', command: 'start_simulation' },
-      { id: 'reset', label: 'Reset', type: 'button', command: 'reset' }
+      { id: 'reset', label: 'Reset', type: 'button', command: 'reset_env' }
     ],
     chartConfig: [
-      { key: 'angle', color: '#ff00ff', label: 'Angle (°)', yAxisId: 'left' },
-      { key: 'period', color: '#00ff00', label: 'Period (s)', yAxisId: 'right' }
+      { key: 'angle', color: '#ff00ff', label: 'Angle (°)', yAxisId: 'left' }
+    ],
+    // 额外的数值显示（不在图表中，但在顶部显示）
+    extraMetrics: [
+      { key: 'period', label: 'Period (s)', color: '#00ff00' }
     ]
   },
   {

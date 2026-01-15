@@ -29,30 +29,39 @@ const LevelSelect: React.FC<LevelSelectProps> = ({ onSelectLevel, onBack }) => {
     }));
     setParticles(newParticles);
 
-    // 初始化WebSocket连接并加载USD场景（只在首次进入时执行）
+    // 初始化WebSocket连接并加载USD场景
     const initializeConnection = async () => {
-      console.log('📡 Initializing connection on LevelSelect...');
+      console.log(' Initializing connection on LevelSelect...');
 
       // 检查是否已连接
-      if (isaacService.isConnected()) {
-        console.log('✅ Already connected, skipping initialization');
+      const alreadyConnected = isaacService.isConnected();
+      
+      if (alreadyConnected) {
+        console.log('✅ Already connected, switching to exp2 camera...');
+        // 已连接时（从实验返回），只切换相机到 exp2
+        await isaacService.switchCamera('2');
         return;
       }
 
       try {
         // 1. 连接WebSocket
-        console.log('🔌 Connecting to Isaac Sim...');
+        console.log(' Connecting to Isaac Sim...');
         const connected = await isaacService.connect('level-select');
 
         if (connected) {
           console.log('✅ WebSocket connected');
 
           // 2. 加载exp.usd（统一的场景文件，默认加载实验1）
-          console.log('📂 Loading USD scene...');
+          console.log(' Loading USD scene...');
           const loaded = await isaacService.loadUSDScene('1');
 
           if (loaded) {
-            console.log('✅ USD scene loaded, ready for experiment selection');
+            console.log('✅ USD scene loaded');
+            
+            // 3. 切换到 exp2 的相机视角（Level Select 界面默认视角）
+            console.log(' Switching to exp2 camera for level select view...');
+            await isaacService.switchCamera('2');
+            console.log('✅ Camera switched, ready for experiment selection');
           } else {
             console.warn('⚠️ Failed to load USD scene');
           }
@@ -70,7 +79,7 @@ const LevelSelect: React.FC<LevelSelectProps> = ({ onSelectLevel, onBack }) => {
     return () => {
       clearTimeout(timer);
       // 不断开连接，保持WebSocket在线
-      console.log('🔄 LevelSelect unmounting, keeping connection alive');
+      console.log(' LevelSelect unmounting, keeping connection alive');
     };
   }, []);
   // 根据实验类型返回对应的图标和主题色

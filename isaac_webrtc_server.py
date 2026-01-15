@@ -11,6 +11,7 @@ import omni.kit.viewport.utility as vp_util
 import omni.usd
 import omni.timeline
 from pxr import Gf, UsdGeom, UsdPhysics
+from pxr import PhysxSchema
 import asyncio
 import json
 import math
@@ -29,34 +30,63 @@ RTCConfiguration(
     ]
 )
 # ============================================================
-# 1. 导入配置模块
+# 1. 导入配置模块 (使用绝对路径确保导入正确的 config)
 # ============================================================
-try:
-    import config
-except ImportError:
-    sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-    try:
-        import config
-    except ImportError:
-        carb.log_error("❌ Critical: 'config.py' not found!")
-        class ConfigMock:
-            HTTP_HOST = "0.0.0.0"
-            HTTP_PORT = 8080
-            WS_HOST = "0.0.0.0"
-            WS_PORT = 30000
-            VIDEO_WIDTH = 1280
-            VIDEO_HEIGHT = 720
-            VIDEO_FPS = 30
-            DEFAULT_USD_PATH = ""
-            REPLICATOR_INIT_MAX_RETRIES = 3
-            REPLICATOR_INIT_RETRY_DELAY = 1.0
-            EXP1_DEFAULT_DISK_MASS = 1.0
-            EXP1_DEFAULT_RING_MASS = 1.0
-            EXP1_DEFAULT_INITIAL_VELOCITY = 0.0
-            SIMULATION_CHECK_INTERVAL = 0.1
-            TELEMETRY_BROADCAST_INTERVAL = 0.05
-            HOST_IP = "127.0.0.1"
-        config = ConfigMock()
+import importlib.util
+
+# 智能查找项目根目录（修复 Isaac Sim Script Editor 环境下的路径问题）
+# 在 Isaac Sim Script Editor 中，__file__ 会解析到临时目录，因此需要从 sys.path 中查找
+_PROJECT_ROOT = None
+
+# 策略1：检查 sys.path 中的第一个路径（start_fixed.py 会设置正确的 PROJECT_ROOT）
+for candidate_path in sys.path[:5]:  # 检查前5个路径
+    if os.path.exists(os.path.join(candidate_path, 'config.py')):
+        _PROJECT_ROOT = candidate_path
+        carb.log_info(f"🔍 [Config] Found PROJECT_ROOT from sys.path: {_PROJECT_ROOT}")
+        break
+
+# 策略2：如果策略1失败，尝试使用 __file__（兜底方案）
+if _PROJECT_ROOT is None:
+    _PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+    carb.log_warn(f"⚠️ [Config] Using __file__ as fallback: {_PROJECT_ROOT}")
+
+# 确保找到的路径在 sys.path 最前面
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+elif sys.path[0] != _PROJECT_ROOT:
+    sys.path.remove(_PROJECT_ROOT)
+    sys.path.insert(0, _PROJECT_ROOT)
+
+# 强制从项目目录加载 config，避免与其他 config 模块冲突
+_config_path = os.path.join(_PROJECT_ROOT, 'config.py')
+if os.path.exists(_config_path):
+    _spec = importlib.util.spec_from_file_location("config", _config_path)
+    config = importlib.util.module_from_spec(_spec)
+    sys.modules['config'] = config  # 替换缓存中的 config
+    _spec.loader.exec_module(config)
+    carb.log_info(f"✅ Config loaded from: {_config_path}")
+else:
+    carb.log_error(f"❌ Critical: 'config.py' not found at {_config_path}!")
+    carb.log_error(f"   Searched in PROJECT_ROOT: {_PROJECT_ROOT}")
+    carb.log_error(f"   sys.path[0:5]: {sys.path[:5]}")
+    class ConfigMock:
+        HTTP_HOST = "0.0.0.0"
+        HTTP_PORT = 8080
+        WS_HOST = "0.0.0.0"
+        WS_PORT = 30000
+        VIDEO_WIDTH = 2560
+        VIDEO_HEIGHT = 1440
+        VIDEO_FPS = 30
+        DEFAULT_USD_PATH = ""
+        REPLICATOR_INIT_MAX_RETRIES = 3
+        REPLICATOR_INIT_RETRY_DELAY = 1.0
+        EXP1_DEFAULT_DISK_MASS = 1.0
+        EXP1_DEFAULT_RING_MASS = 1.0
+        EXP1_DEFAULT_INITIAL_VELOCITY = 0.0
+        SIMULATION_CHECK_INTERVAL = 0.1
+        TELEMETRY_BROADCAST_INTERVAL = 0.05
+        HOST_IP = "127.0.0.1"
+    config = ConfigMock()
 
 # WebRTC依赖
 try:
@@ -205,6 +235,17 @@ class IsaacSimVideoTrack(VideoStreamTrack):
             carb.log_error("❌ Empty array received from replicator")
             frame_array = self._generate_test_pattern()
         else:
+            # 调试：每100帧打印一次帧大小
+            if self.frame_count % 100 == 0:
+                carb.log_warn(f"📐 Frame shape: {frame_array.shape}, expected: ({self.height}, {self.width}, 3)")
+            
+            # 如果帧大小不对，调整大小
+            if frame_array.shape[0] != self.height or frame_array.shape[1] != self.width:
+                from PIL import Image
+                img = Image.fromarray(frame_array[:, :, :3] if frame_array.shape[2] == 4 else frame_array)
+                img = img.resize((self.width, self.height), Image.LANCZOS)
+                frame_array = np.array(img)
+            
             if not (frame_array.dtype == np.uint8 and frame_array.flags['C_CONTIGUOUS']):
                 frame_array = self._validate_and_fix_frame(frame_array)
 
@@ -230,25 +271,62 @@ class IsaacSimVideoTrack(VideoStreamTrack):
         return frame
 
     async def _capture_isaac_frame_async(self):
-        """尝试多种方法获取帧"""
-        # 方法1: 尝试从 viewport 直接获取
+        """优先使用 viewport 获取帧（不影响仿真）"""
+        # 方法1: 使用 viewport 直接获取（不影响仿真）
         frame = await self._capture_from_viewport()
         if frame is not None:
             return frame
         
-        # 方法2: 使用 Replicator
+        # 方法2: 使用 Replicator（备用，可能影响仿真）
         frame = await self._capture_from_replicator()
         if frame is not None:
+            self._empty_count = 0
             return frame
         
         return None
 
     async def _capture_from_viewport(self):
-        """直接从 viewport 获取帧 - 禁用，viewport 捕获 API 在当前版本有问题"""
-        # viewport 捕获在当前 Isaac Sim 版本中有 API 兼容性问题
-        # ByteCapture 和 HdrCaptureHelper 对象需要特殊处理
-        # 暂时禁用此方法，只使用 Replicator
-        return None
+        """直接从 viewport 获取帧 - 使用缓存的 Camera 对象"""
+        try:
+            from omni.isaac.sensor import Camera
+            
+            # 获取活动视口的相机路径
+            viewport = vp_util.get_active_viewport()
+            if viewport is None:
+                return None
+            
+            camera_path = viewport.get_active_camera()
+            if not camera_path:
+                return None
+            
+            # 使用缓存的 Camera 对象
+            if not hasattr(self, '_cached_camera') or self._cached_camera_path != str(camera_path):
+                try:
+                    self._cached_camera = Camera(
+                        prim_path=str(camera_path),
+                        resolution=(self.width, self.height)
+                    )
+                    self._cached_camera.initialize()
+                    self._cached_camera_path = str(camera_path)
+                    carb.log_warn(f"📷 Created cached camera: {camera_path} at {self.width}x{self.height}")
+                except Exception as e:
+                    carb.log_warn(f"⚠️ Failed to create camera: {e}")
+                    return None
+            
+            # 获取 RGBA 图像
+            try:
+                rgba = self._cached_camera.get_rgba()
+                if rgba is not None and rgba.size > 0:
+                    rgb = rgba[:, :, :3]
+                    return np.ascontiguousarray(rgb)
+            except Exception as e:
+                if hasattr(self, '_cached_camera'):
+                    del self._cached_camera
+                pass
+            
+            return None
+        except Exception as e:
+            return None
 
     async def _capture_from_replicator(self):
         """使用 Replicator 获取帧"""
@@ -266,18 +344,13 @@ class IsaacSimVideoTrack(VideoStreamTrack):
                         self._init_retry_count = 0
                     return None
 
-            # === 1. 触发渲染更新 ===
-            app = omni.kit.app.get_app()
-            await app.next_update_async()
-            
-            # === 2. 触发 Replicator 渲染（关键！）===
+            # === 1. 触发 Replicator 渲染（作为备用方案）===
             try:
                 await rep.orchestrator.step_async()
-            except Exception as e:
-                # 如果 step_async 失败，继续尝试获取数据
+            except Exception:
                 pass
 
-            # === 3. 获取数据 ===
+            # === 2. 获取数据 ===
             try:
                 data = self.rgb_annotator.get_data()
             except KeyError as e:
@@ -288,16 +361,13 @@ class IsaacSimVideoTrack(VideoStreamTrack):
                 return None
             
             if data is None:
-                # 可能只是渲染还没完成，不要重新初始化
                 return None
             
             if data.size == 0:
-                # 可能只是渲染还没完成，不要立即重新初始化
-                # 只有连续多次失败才重新初始化
                 if not hasattr(self, '_empty_count'):
                     self._empty_count = 0
                 self._empty_count += 1
-                if self._empty_count > 30:  # 连续30次空数据才重新初始化
+                if self._empty_count > 30:
                     carb.log_warn("⚠️ get_data() returned empty too many times, reinitializing...")
                     self._replicator_initialized = False
                     self._empty_count = 0
@@ -387,15 +457,34 @@ class WebRTCServer:
         self.camera_controller = CameraController()
         self.video_track = None
         self.ws_clients = set()
-        
+
         self.simulation_control_enabled = False
         self.auto_stop_enabled = True
         self._monitor_task = None
-        
+
+        # 实验1参数
         self.exp1_disk_mass = config.EXP1_DEFAULT_DISK_MASS
         self.exp1_ring_mass = config.EXP1_DEFAULT_RING_MASS
         self.exp1_initial_vel = config.EXP1_DEFAULT_INITIAL_VELOCITY
-        
+
+        # 实验2参数
+        self.exp2_initial_angle = config.EXP2_DEFAULT_INITIAL_ANGLE
+        self.exp2_mass1 = config.EXP2_DEFAULT_MASS1
+        self.exp2_mass2 = config.EXP2_DEFAULT_MASS2
+
+        # 当前实验编号（用于区分遥测数据）
+        self.current_experiment = "1"
+
+        # 实验2周期检测变量
+        self.exp2_angle_history = []
+        self.exp2_last_peak_time = None
+        self.exp2_period = 0.0
+        self.exp2_period_samples = []  # 用于平滑周期
+
+        # 实验2周期计算变量（改进版 - 零交叉检测）
+        self.exp2_zero_cross_times = []  # 记录零交叉时刻
+        self.exp2_last_angle_sign = None  # 上一次角度的符号
+
         self._dc_interface = None
         self.config_module = config
 
@@ -419,10 +508,10 @@ class WebRTCServer:
         params = await request.json()
         offer = RTCSessionDescription(sdp=params["sdp"], type=params["type"])
         
-        config = RTCConfiguration(iceServers=[
+        rtc_config = RTCConfiguration(iceServers=[
             RTCIceServer(urls="stun:stun.l.google.com:19302")
         ])
-        pc = RTCPeerConnection(configuration=config)
+        pc = RTCPeerConnection(configuration=rtc_config)
         self.pcs.add(pc)
 
         @pc.on("connectionstatechange")
@@ -446,11 +535,17 @@ class WebRTCServer:
         
         # --- IP Patching Logic ---
         server_ip = getattr(config, 'HOST_IP', get_host_ip())
+        carb.log_info(f"🌐 Using server IP for SDP patch: {server_ip}")
         sdp_lines = answer.sdp.splitlines()
         new_sdp_lines = []
         for line in sdp_lines:
             if "c=IN IP4" in line:
                 new_sdp_lines.append(f"c=IN IP4 {server_ip}")
+            elif line.startswith("o="):
+                # 替换 origin 行中的 IP 地址
+                line = line.replace("0.0.0.0", server_ip)\
+                        .replace("127.0.0.1", server_ip)
+                new_sdp_lines.append(line)
             elif "a=candidate" in line:
                 # 强制替换所有无效地址
                 line = line.replace("0.0.0.0", server_ip)\
@@ -517,48 +612,95 @@ class WebRTCServer:
         await ws.send_json({"type": "connected", "message": "WebSocket connected to Isaac Sim"})
         try:
             async for msg in ws:
-                carb.log_warn(f"📩 Raw WS message type: {msg.type}")
                 if msg.type == web.WSMsgType.TEXT:
-                    carb.log_warn(f"📩 Raw data: {msg.data[:200]}")
                     data = json.loads(msg.data)
                     mtype = data.get("type")
-                    carb.log_warn(f"📨 Parsed message type: {mtype}")
+                    # 只对重要命令打印日志，减少噪音
+                    if mtype not in ("get_simulation_state",):
+                        carb.log_warn(f"📨 Received command: {mtype}")
                     if mtype == "start_simulation":
-                        carb.log_warn("▶️ Starting simulation...")
+                        tl = omni.timeline.get_timeline_interface()
+                        # 检查是否需要设置初始角速度（只在第一次运行或 reset 后）
+                        if not hasattr(self, '_has_started') or not self._has_started:
+                            carb.log_warn("▶️ Starting simulation (first run)...")
+                            # 只有实验1需要设置初始角速度
+                            if self.current_experiment == "1":
+                                await self._set_initial_angular_velocity()
+                            self._has_started = True
+                        else:
+                            carb.log_warn("▶️ Resuming simulation...")
                         self.simulation_control_enabled = True
-                        # 设置初始角速度
-                        await self._set_initial_angular_velocity()
-                        omni.timeline.get_timeline_interface().play()
-                        carb.log_warn("✅ Simulation started!")
+                        tl.play()
+                        carb.log_warn("✅ Simulation running!")
                     elif mtype == "stop_simulation":
                         carb.log_warn("⏹️ Stopping simulation...")
                         self.simulation_control_enabled = False
                         omni.timeline.get_timeline_interface().stop()
                         carb.log_warn("✅ Simulation stopped!")
                     elif mtype == "reset":
-                        # 重置实验：停止仿真，重置时间，重置角速度为0
+                        # 重置实验：停止仿真，重置时间
                         carb.log_warn("🔄 Resetting experiment...")
                         self.simulation_control_enabled = False
-                        
+                        self._has_started = False  # 重置标志，下次 Run 会重新设置初始角速度
+
+                        # 清空实验2的历史数据和周期检测变量
+                        self.exp2_angle_history = []
+                        self.exp2_last_peak_time = None
+                        self.exp2_period = 0.0
+                        self.exp2_period_samples = []
+                        self.exp2_zero_cross_times = []
+                        self.exp2_last_angle_sign = None
+
                         tl = omni.timeline.get_timeline_interface()
+                        # 多次停止确保真正停止
                         tl.stop()
                         tl.set_current_time(0.0)
-                        
-                        # 重置参数到初始值
-                        self.exp1_disk_mass = config.EXP1_DEFAULT_DISK_MASS
-                        self.exp1_ring_mass = config.EXP1_DEFAULT_RING_MASS
-                        self.exp1_initial_vel = 0.0
-                        
-                        # 重置到初始位置（不改变速度设置）
+                        tl.stop()
+
+                        # 不重置初始速度，保留用户设置的值
+                        # self.exp1_initial_vel 保持不变
+
+                        # 重置到初始位置
                         await self._reset_positions()
-                        
+
+                        # 再次确保停止
+                        await asyncio.sleep(0.1)
+                        tl.stop()
+
                         carb.log_warn("✅ Experiment reset complete!")
                     elif mtype == "enter_experiment":
-                        # 进入实验 - 只记录日志，不做其他操作
+                        # 进入实验 - 切换相机并重置物理状态
                         exp_id = data.get("experiment_id", "unknown")
-                        carb.log_warn(f"📍 Entered experiment: {exp_id}")
+                        carb.log_warn(f"📍 Entering experiment: {exp_id}")
+
+                        # 更新当前实验编号
+                        self.current_experiment = exp_id
+
+                        # 清空实验2的历史数据和周期检测变量（切换实验时）
+                        self.exp2_angle_history = []
+                        self.exp2_last_peak_time = None
+                        self.exp2_period = 0.0
+                        self.exp2_period_samples = []
+                        self.exp2_zero_cross_times = []
+                        self.exp2_last_angle_sign = None
+
+                        # 切换到对应实验的相机
+                        await self._switch_camera(exp_id)
+
+                        # 根据实验编号应用对应的参数
+                        if exp_id == "1":
+                            await self._apply_exp1_params()
+                        elif exp_id == "2":
+                            await self._apply_exp2_params()
+
                         # 发送确认消息
                         await ws.send_json({"type": "experiment_entered", "experiment_id": exp_id})
+                    elif mtype == "switch_camera":
+                        # 切换相机（不改变其他状态）
+                        exp_id = data.get("experiment_id", "2")  # 默认 exp2
+                        carb.log_warn(f"📷 Switching camera to experiment: {exp_id}")
+                        await self._switch_camera(exp_id)
+                        await ws.send_json({"type": "camera_switched", "experiment_id": exp_id})
                     elif mtype == "get_simulation_state":
                         # 返回仿真状态（不打印日志，避免刷屏）
                         tl = omni.timeline.get_timeline_interface()
@@ -582,56 +724,132 @@ class WebRTCServer:
                          self.exp1_initial_vel = float(data.get("value", 5.0))
                          carb.log_warn(f"📊 Set initial velocity: {self.exp1_initial_vel} rad/s")
                          # 不立即应用，等点击 Run 时再应用
+                    elif mtype == "set_initial_angle":
+                         # 设置初始角度（在停止状态下设置，避免物理引擎误认为是目标姿态）
+                         self.exp2_initial_angle = float(data.get("value", 90.0))
+                         carb.log_warn(f"📊 [Exp2] Set initial angle: {self.exp2_initial_angle}°")
+                         await self._apply_exp2_params()
+                    elif mtype == "set_exp2_mass1":
+                         self.exp2_mass1 = float(data.get("value", 1.0))
+                         carb.log_warn(f"📊 [Exp2] Set Cylinder_01 mass: {self.exp2_mass1} kg")
+                         await self._apply_exp2_params()
+                    elif mtype == "set_exp2_mass2":
+                         self.exp2_mass2 = float(data.get("value", 1.0))
+                         carb.log_warn(f"📊 [Exp2] Set Cylinder_02 mass: {self.exp2_mass2} kg")
+                         await self._apply_exp2_params()
                     else:
                         carb.log_warn(f"📨 Received unknown message type: {mtype}")
         finally:
             self.ws_clients.discard(ws)
         return ws
 
-    async def _set_initial_angular_velocity(self):
-        """设置 disk 的初始角速度 - 使用多种方法尝试"""
+    def _switch_camera_sync(self, experiment_id: str):
+        """同步切换相机（在主线程中执行）"""
         try:
-            # 方法1: 使用 Isaac Sim 的 RigidPrimView
-            try:
-                from omni.isaac.core.prims import RigidPrim
-                disk_rigid = RigidPrim(prim_path="/World/exp1/disk")
-                scaled_vel = float(self.exp1_initial_vel) * 1000.0
-                # 设置角速度 [wx, wy, wz]
-                disk_rigid.set_angular_velocity([0.0, 0.0, scaled_vel])
-                carb.log_warn(f"✅ [RigidPrim] Set disk angular velocity: {scaled_vel} rad/s")
-                return
-            except Exception as e1:
-                carb.log_warn(f"⚠️ RigidPrim method failed: {e1}")
+            camera_script = os.path.join(_PROJECT_ROOT, 'camera', f'usd{experiment_id}.py')
+            carb.log_warn(f"📷 Looking for camera script: {camera_script}")
+            carb.log_warn(f"📷 PROJECT_ROOT: {_PROJECT_ROOT}")
             
-            # 方法2: 使用 Dynamic Control
-            try:
-                from omni.isaac.dynamic_control import _dynamic_control
-                dc = _dynamic_control.acquire_dynamic_control_interface()
+            if os.path.exists(camera_script):
+                carb.log_warn(f"📷 Found script, reading content...")
                 
-                # 获取 rigid body handle
-                disk_handle = dc.get_rigid_body("/World/exp1/disk")
-                if disk_handle != _dynamic_control.INVALID_HANDLE:
-                    scaled_vel = float(self.exp1_initial_vel) * 1000.0
-                    dc.set_rigid_body_angular_velocity(disk_handle, [0.0, 0.0, scaled_vel])
-                    carb.log_warn(f"✅ [DynamicControl] Set disk angular velocity: {scaled_vel} rad/s")
+                # 读取脚本内容
+                with open(camera_script, 'r', encoding='utf-8') as f:
+                    script_content = f.read()
+                
+                carb.log_warn(f"📷 Script content length: {len(script_content)} chars")
+                
+                # 直接执行相机设置逻辑，不使用 exec
+                stage = omni.usd.get_context().get_stage()
+                if not stage:
+                    carb.log_error("💥 No USD stage available!")
                     return
+                
+                # 获取活动相机
+                viewport = vp_util.get_active_viewport()
+                if viewport:
+                    camera_path = viewport.get_active_camera()
                 else:
-                    carb.log_warn("⚠️ DynamicControl: Invalid disk handle")
-            except Exception as e2:
-                carb.log_warn(f"⚠️ DynamicControl method failed: {e2}")
-            
-            # 方法3: 使用 USD API (fallback)
+                    camera_path = "/OmniverseKit_Persp"
+                
+                carb.log_warn(f"📷 Using camera: {camera_path}")
+                
+                camera_prim = stage.GetPrimAtPath(camera_path)
+                if not camera_prim.IsValid():
+                    carb.log_error(f"💥 Camera not found: {camera_path}")
+                    return
+                
+                camera = UsdGeom.Camera(camera_prim)
+                xform = UsdGeom.Xformable(camera_prim)
+                
+                # 获取现有的 xformOp
+                xform_ops = xform.GetOrderedXformOps()
+                translate_op = None
+                orient_op = None
+                
+                for op in xform_ops:
+                    if op.GetOpType() == UsdGeom.XformOp.TypeTranslate:
+                        translate_op = op
+                    elif op.GetOpType() == UsdGeom.XformOp.TypeOrient:
+                        orient_op = op
+                
+                # 如果操作不存在，则创建
+                if not translate_op:
+                    translate_op = xform.AddTranslateOp()
+                if not orient_op:
+                    orient_op = xform.AddOrientOp()
+                
+                # 根据实验ID设置相机参数
+                if experiment_id == "1":
+                    # 实验1相机参数
+                    translate_op.Set(Gf.Vec3d(3.5422114387995194, 4.789534293747461, 2.734575842472313))
+                    orient_op.Set(Gf.Quatd(0.2293882119384616, 0.14807866885692916, 0.5217433897762196, 0.8082311496583482))
+                    carb.log_warn("📷 Applied camera params for Experiment 1")
+                elif experiment_id == "2":
+                    # 实验2相机参数
+                    translate_op.Set(Gf.Vec3d(1.169913776980235, 5.384567671926622, 2.5526077469676727))
+                    orient_op.Set(Gf.Quatd(0.014359612064957861, 0.009788101829553237, 0.5631514231667778, 0.8261709684981379))
+                    carb.log_warn("📷 Applied camera params for Experiment 2")
+                else:
+                    carb.log_warn(f"⚠️ No camera params defined for experiment {experiment_id}, using default")
+                
+                # 设置通用相机参数
+                camera.GetClippingRangeAttr().Set(Gf.Vec2f(0.009999999776482582, 10000000.0))
+                camera.GetFocalLengthAttr().Set(18.14756202697754)
+                
+                carb.log_warn(f"✅ Camera switched to experiment {experiment_id}")
+            else:
+                carb.log_warn(f"⚠️ Camera script not found: {camera_script}")
+        except Exception as e:
+            carb.log_error(f"💥 Failed to switch camera: {e}")
+            import traceback
+            traceback.print_exc()
+
+    async def _switch_camera(self, experiment_id: str):
+        """切换到指定实验的相机配置"""
+        # 直接调用同步版本
+        self._switch_camera_sync(experiment_id)
+
+    async def _set_initial_angular_velocity(self):
+        """设置 disk 的初始角速度"""
+        try:
+            import math
+            # 使用 USD API 设置角速度
+            # 用户输入是 rad/s，Isaac Sim 使用度/秒
+            # 转换公式：度/秒 = rad/s × 180/π
             stage = omni.usd.get_context().get_stage()
             if stage:
                 disk_prim = stage.GetPrimAtPath("/World/exp1/disk")
                 if disk_prim and disk_prim.IsValid() and disk_prim.HasAPI(UsdPhysics.RigidBodyAPI):
                     rb_api = UsdPhysics.RigidBodyAPI(disk_prim)
-                    scaled_vel = float(self.exp1_initial_vel) * 1000.0
-                    angular_vel = Gf.Vec3f(0.0, 0.0, scaled_vel)
+                    # rad/s 转换为 度/秒: 乘以 180/π，缩放因子改为 10
+                    SCALE_FACTOR = 10.0
+                    deg_per_sec = float(self.exp1_initial_vel) * (180.0 / math.pi) * SCALE_FACTOR
+                    angular_vel = Gf.Vec3f(0.0, 0.0, deg_per_sec)
                     rb_api.GetAngularVelocityAttr().Set(angular_vel)
-                    carb.log_warn(f"✅ [USD API] Set disk angular velocity: {scaled_vel} rad/s")
+                    carb.log_warn(f"✅ Set disk angular velocity: {self.exp1_initial_vel} rad/s = {deg_per_sec:.2f} deg/s (×{SCALE_FACTOR:.0f})")
                 else:
-                    carb.log_warn("⚠️ USD API: disk prim not found or no RigidBodyAPI")
+                    carb.log_warn("⚠️ disk prim not found or no RigidBodyAPI")
                 
         except Exception as e:
             carb.log_error(f"💥 Failed to set initial velocity: {e}")
@@ -651,91 +869,426 @@ class WebRTCServer:
             carb.log_error(f"💥 Failed to reset positions: {e}")
 
     async def _apply_exp1_params(self):
-        """只设置质量参数，不动态设置角速度（角速度由物理引擎控制）"""
+        """只设置质量（其他使用 USD 默认值）"""
         try:
             stage = omni.usd.get_context().get_stage()
-            if not stage: 
+            if not stage:
                 carb.log_warn("⚠️ No stage found, cannot apply params")
                 return
-            
-            # 设置质量
+
             paths_and_masses = [("/World/exp1/disk", self.exp1_disk_mass), ("/World/exp1/ring", self.exp1_ring_mass)]
             for path, mass in paths_and_masses:
                 prim = stage.GetPrimAtPath(path)
                 if prim and prim.IsValid():
-                    if prim.HasAPI(UsdPhysics.MassAPI):
-                        UsdPhysics.MassAPI(prim).GetMassAttr().Set(mass)
-                        carb.log_info(f"✅ Set mass for {path}: {mass} kg")
-                    else:
-                        UsdPhysics.MassAPI.Apply(prim).GetMassAttr().Set(mass)
-                        carb.log_info(f"✅ Applied MassAPI and set mass for {path}: {mass} kg")
+                    # 只设置质量
+                    if not prim.HasAPI(UsdPhysics.MassAPI):
+                        UsdPhysics.MassAPI.Apply(prim)
+                    mass_api = UsdPhysics.MassAPI(prim)
+                    mass_api.GetMassAttr().Set(float(mass))
+                    carb.log_warn(f"✅ Set mass for {path}: {mass}kg")
                 else:
                     carb.log_warn(f"⚠️ Prim not found: {path}")
-            
-            carb.log_info(f"📊 Params applied: Disk Mass={self.exp1_disk_mass}kg, Ring Mass={self.exp1_ring_mass}kg")
+
+            carb.log_warn(f"📊 Mass applied: Disk={self.exp1_disk_mass}kg, Ring={self.exp1_ring_mass}kg")
         except Exception as e:
             carb.log_error(f"💥 Failed to apply params: {e}")
             import traceback
             traceback.print_exc()
+
+    async def _apply_exp2_params(self):
+        """设置实验2的参数：质量和初始角度
+
+        只设置用户要求的4个功能相关的参数：
+        1. 初始角度设置（默认90度）
+        2. 两个重物的质量设置
+        3. 角度实时读取（在其他函数中实现）
+        4. 周期计算（在其他函数中实现）
+
+        注意：不修改阻尼、摩擦、关节驱动等物理参数，保持USD原始配置
+        """
+        try:
+            stage = omni.usd.get_context().get_stage()
+            if not stage:
+                carb.log_warn("⚠️ [Exp2] No stage found, cannot apply params")
+                return
+
+            # 1. 设置初始角度（在停止状态下）
+            tl = omni.timeline.get_timeline_interface()
+            was_playing = tl.is_playing()
+
+            # 确保在停止状态下设置角度
+            if was_playing:
+                tl.stop()
+                await asyncio.sleep(0.1)  # 等待停止完成
+
+            # 设置 Group_01 的旋转角度
+            group_prim = stage.GetPrimAtPath(config.EXP2_GROUP_PATH)
+            if group_prim and group_prim.IsValid():
+                xformable = UsdGeom.Xformable(group_prim)
+
+                # 清除现有的旋转操作
+                xformable.ClearXformOpOrder()
+
+                # 添加新的旋转操作（绕Y轴）
+                rotate_op = xformable.AddRotateYOp()
+                rotate_op.Set(float(self.exp2_initial_angle))
+
+                carb.log_warn(f"✅ [Exp2] Set initial angle: {self.exp2_initial_angle}°")
+            else:
+                carb.log_warn(f"⚠️ [Exp2] Group_01 not found: {config.EXP2_GROUP_PATH}")
+
+            # 2. 设置两个重物的质量
+            mass_paths = [
+                (config.EXP2_MASS1_PATH, self.exp2_mass1, "Cylinder_01"),
+                (config.EXP2_MASS2_PATH, self.exp2_mass2, "Cylinder_02")
+            ]
+            for path, mass, name in mass_paths:
+                prim = stage.GetPrimAtPath(path)
+                if prim and prim.IsValid():
+                    # 只设置质量，不修改其他物理属性
+                    if not prim.HasAPI(UsdPhysics.MassAPI):
+                        UsdPhysics.MassAPI.Apply(prim)
+                    mass_api = UsdPhysics.MassAPI(prim)
+                    mass_api.GetMassAttr().Set(float(mass))
+
+                    carb.log_warn(f"✅ [Exp2] Set {name} mass: {mass}kg")
+                else:
+                    carb.log_warn(f"⚠️ [Exp2] Mass prim not found: {path}")
+
+            carb.log_warn(f"📊 [Exp2] Params applied: Angle={self.exp2_initial_angle}°, Mass1={self.exp2_mass1}kg, Mass2={self.exp2_mass2}kg")
+
+        except Exception as e:
+            carb.log_error(f"💥 [Exp2] Failed to apply params: {e}")
+            import traceback
+            traceback.print_exc()
     
     def _get_actual_angular_velocities(self):
-        """从物理仿真中读取实际的角速度 - 使用简单的 USD API"""
+        """从物理仿真中读取实际的角速度"""
         disk_vel = 0.0
         ring_vel = 0.0
         
         try:
+            # 方法1: 尝试使用 Dynamic Control API
+            try:
+                from omni.isaac.dynamic_control import _dynamic_control
+                
+                if self._dc_interface is None:
+                    self._dc_interface = _dynamic_control.acquire_dynamic_control_interface()
+                
+                dc = self._dc_interface
+                
+                SCALE_FACTOR = 10.0
+                
+                # 读取 disk 的角速度
+                disk_handle = dc.get_rigid_body("/World/exp1/disk")
+                if disk_handle != _dynamic_control.INVALID_HANDLE:
+                    ang_vel = dc.get_rigid_body_angular_velocity(disk_handle)
+                    if ang_vel is not None:
+                        # Dynamic Control 返回 rad/s，除以 SCALE_FACTOR 还原缩放
+                        disk_vel = float(ang_vel[2]) / SCALE_FACTOR
+                
+                # 读取 ring 的角速度
+                ring_handle = dc.get_rigid_body("/World/exp1/ring")
+                if ring_handle != _dynamic_control.INVALID_HANDLE:
+                    ang_vel = dc.get_rigid_body_angular_velocity(ring_handle)
+                    if ang_vel is not None:
+                        ring_vel = float(ang_vel[2]) / SCALE_FACTOR
+                
+                return disk_vel, ring_vel
+            except:
+                pass
+            
+            # 方法2: 使用 Isaac Core RigidPrim
+            try:
+                from omni.isaac.core.prims import RigidPrim
+                SCALE_FACTOR = 10.0
+                
+                disk_prim = RigidPrim("/World/exp1/disk")
+                vel = disk_prim.get_angular_velocity()
+                if vel is not None:
+                    disk_vel = float(vel[2]) / SCALE_FACTOR
+                
+                ring_prim = RigidPrim("/World/exp1/ring")
+                vel = ring_prim.get_angular_velocity()
+                if vel is not None:
+                    ring_vel = float(vel[2]) / SCALE_FACTOR
+                
+                return disk_vel, ring_vel
+            except:
+                pass
+            
+            # 方法3: 使用 USD API (只能读初始值，作为后备)
             stage = omni.usd.get_context().get_stage()
-            if not stage:
-                return 0.0, 0.0
-            
-            # 读取 disk 的角速度（反向缩放，除以1000）
-            disk_prim = stage.GetPrimAtPath("/World/exp1/disk")
-            if disk_prim and disk_prim.IsValid() and disk_prim.HasAPI(UsdPhysics.RigidBodyAPI):
-                rb_api = UsdPhysics.RigidBodyAPI(disk_prim)
-                vel_attr = rb_api.GetAngularVelocityAttr()
-                if vel_attr and vel_attr.Get():
-                    vel = vel_attr.Get()
-                    disk_vel = float(vel[2]) / 1000.0 if vel else 0.0
-            
-            # 读取 ring 的角速度（反向缩放，除以1000）
-            ring_prim = stage.GetPrimAtPath("/World/exp1/ring")
-            if ring_prim and ring_prim.IsValid() and ring_prim.HasAPI(UsdPhysics.RigidBodyAPI):
-                rb_api = UsdPhysics.RigidBodyAPI(ring_prim)
-                vel_attr = rb_api.GetAngularVelocityAttr()
-                if vel_attr and vel_attr.Get():
-                    vel = vel_attr.Get()
-                    ring_vel = float(vel[2]) / 1000.0 if vel else 0.0
+            if stage:
+                import math
+                SCALE_FACTOR = 10.0
+                disk_prim = stage.GetPrimAtPath("/World/exp1/disk")
+                if disk_prim and disk_prim.IsValid() and disk_prim.HasAPI(UsdPhysics.RigidBodyAPI):
+                    rb_api = UsdPhysics.RigidBodyAPI(disk_prim)
+                    vel_attr = rb_api.GetAngularVelocityAttr()
+                    if vel_attr and vel_attr.Get():
+                        vel = vel_attr.Get()
+                        disk_vel = float(vel[2]) * (math.pi / 180.0) / SCALE_FACTOR if vel else 0.0
+                
+                ring_prim = stage.GetPrimAtPath("/World/exp1/ring")
+                if ring_prim and ring_prim.IsValid() and ring_prim.HasAPI(UsdPhysics.RigidBodyAPI):
+                    rb_api = UsdPhysics.RigidBodyAPI(ring_prim)
+                    vel_attr = rb_api.GetAngularVelocityAttr()
+                    if vel_attr and vel_attr.Get():
+                        vel = vel_attr.Get()
+                        ring_vel = float(vel[2]) * (math.pi / 180.0) / SCALE_FACTOR if vel else 0.0
             
             return disk_vel, ring_vel
-        except:
+        except Exception as e:
             return 0.0, 0.0
+
+    def _get_exp2_angle(self):
+        """获取实验2中摆杆的实时旋转角度（度）
+
+        方法：RigidPrim + scipy 读取世界姿态的 Y 轴角度
+        用户验证：旋转90度后角度变化正确
+        """
+        try:
+            import math
+            angle_deg = None
+
+            # 使用 Isaac Core RigidPrim + scipy（用户验证正确）
+            try:
+                from omni.isaac.core.prims import RigidPrim
+                from scipy.spatial.transform import Rotation as R
+
+                # 读取 Cylinder 的世界姿态
+                cylinder_rigid = RigidPrim(config.EXP2_CYLINDER_PATH)
+                position, orientation = cylinder_rigid.get_world_pose()
+
+                if orientation is not None:
+                    # 四元数 [x, y, z, w] 转换为欧拉角
+                    quat_xyzw = [float(orientation[0]), float(orientation[1]),
+                                float(orientation[2]), float(orientation[3])]
+                    rotation_scipy = R.from_quat(quat_xyzw)
+                    euler_xyz = rotation_scipy.as_euler('xyz', degrees=True)
+
+                    # 直接使用 Y 轴角度（用户测试验证正确）
+                    angle_deg = float(euler_xyz[1])
+
+                    if not hasattr(self, '_method_logged'):
+                        carb.log_warn("✅ [Exp2] Using RigidPrim + scipy (user verified)")
+                        self._method_logged = True
+
+            except ImportError:
+                # scipy 不可用，回退到 USD API
+                if not hasattr(self, '_scipy_warn_logged'):
+                    carb.log_warn("⚠️ [Exp2] scipy not available, using USD fallback")
+                    self._scipy_warn_logged = True
+                angle_deg = self._get_exp2_angle_fallback()
+
+            except Exception as e:
+                if not hasattr(self, '_rigidprim_error_logged'):
+                    carb.log_warn(f"⚠️ [Exp2] RigidPrim failed: {e}, using fallback")
+                    self._rigidprim_error_logged = True
+                angle_deg = self._get_exp2_angle_fallback()
+
+            # 如果所有方法都失败
+            if angle_deg is None:
+                return 0.0
+
+            # 归一化到 [-180, 180] 范围
+            while angle_deg > 180:
+                angle_deg -= 360
+            while angle_deg < -180:
+                angle_deg += 360
+
+            # 直接返回原始角度，不做额外的平滑或过滤
+            # scipy 的四元数转换已经足够稳定，高频采样(100Hz)可以保证平滑
+            return angle_deg
+
+        except Exception as e:
+            carb.log_error(f"❌ [Exp2] Error reading angle: {e}")
+            import traceback
+            traceback.print_exc()
+            return 0.0
+
+    def _get_exp2_angle_fallback(self):
+        """备用方法：使用 USD API 读取角度（当 RigidPrim 不可用时）"""
+        try:
+            import math
+            stage = omni.usd.get_context().get_stage()
+            if not stage:
+                return 0.0
+
+            # 读取 Cylinder 和 Group_01 的世界变换
+            cylinder_prim = stage.GetPrimAtPath(config.EXP2_CYLINDER_PATH)
+            group_prim = stage.GetPrimAtPath(config.EXP2_GROUP_PATH)
+
+            if not (cylinder_prim and cylinder_prim.IsValid() and group_prim and group_prim.IsValid()):
+                return 0.0
+
+            cylinder_xform = UsdGeom.Xformable(cylinder_prim)
+            group_xform = UsdGeom.Xformable(group_prim)
+
+            cylinder_world = cylinder_xform.ComputeLocalToWorldTransform(0)
+            group_world = group_xform.ComputeLocalToWorldTransform(0)
+
+            # 修正矩阵乘法顺序：relative = parent_inv * child
+            relative_transform = group_world.GetInverse() * cylinder_world
+
+            # 提取旋转并转换为欧拉角
+            rotation = relative_transform.ExtractRotation()
+            angles = rotation.Decompose(Gf.Vec3d.XAxis(), Gf.Vec3d.YAxis(), Gf.Vec3d.ZAxis())
+            angle_deg = float(angles[1]) * (180.0 / math.pi)
+
+            return angle_deg
+        except Exception:
+            return 0.0
+
+    def _calculate_exp2_period(self, current_angle, current_time):
+        """计算实验2的周期 - 改进版（零交叉检测法）
+
+        原理：单摆通过平衡位置（0度）时为零交叉点
+        两次同向零交叉之间的时间间隔 = 一个完整周期
+        比峰值检测更稳定，不受振幅衰减影响
+        """
+        try:
+            # 确定当前角度的符号（正或负）
+            current_sign = 1 if current_angle >= 0 else -1
+
+            # 检测零交叉（从正到负，或从负到正）
+            if self.exp2_last_angle_sign is not None:
+                # 检测到符号变化 = 零交叉
+                if current_sign != self.exp2_last_angle_sign:
+                    # 记录零交叉时刻和类型（1=从正到负，-1=从负到正）
+                    cross_type = self.exp2_last_angle_sign
+                    self.exp2_zero_cross_times.append((current_time, cross_type))
+
+                    # 只保留最近10秒的数据
+                    cutoff_time = current_time - 10.0
+                    self.exp2_zero_cross_times = [
+                        (t, ct) for t, ct in self.exp2_zero_cross_times if t >= cutoff_time
+                    ]
+
+                    # 计算周期：找到最近两次同类型的零交叉
+                    if len(self.exp2_zero_cross_times) >= 2:
+                        # 找到所有同类型的零交叉
+                        same_type_crosses = [
+                            (t, ct) for t, ct in self.exp2_zero_cross_times if ct == cross_type
+                        ]
+
+                        if len(same_type_crosses) >= 2:
+                            # 最近两次同类型零交叉的时间间隔 = 一个周期
+                            latest_period = same_type_crosses[-1][0] - same_type_crosses[-2][0]
+
+                            # 合理性检查：周期应该在0.3秒到10秒之间
+                            if 0.3 < latest_period < 10.0:
+                                # 添加到平滑样本列表
+                                self.exp2_period_samples.append(latest_period)
+
+                                # 保留最近3个样本用于平滑（减少噪声影响）
+                                if len(self.exp2_period_samples) > 3:
+                                    self.exp2_period_samples.pop(0)
+
+                                # 计算平均周期
+                                self.exp2_period = sum(self.exp2_period_samples) / len(self.exp2_period_samples)
+
+                                carb.log_warn(
+                                    f"📊 [Exp2] Zero-crossing detected! "
+                                    f"Period: {latest_period:.2f}s (smoothed: {self.exp2_period:.2f}s)"
+                                )
+                            else:
+                                carb.log_warn(
+                                    f"⚠️ [Exp2] Invalid period: {latest_period:.2f}s (out of range 0.3-10s)"
+                                )
+
+            # 更新上一次的符号
+            self.exp2_last_angle_sign = current_sign
+
+            return self.exp2_period
+
+        except Exception as e:
+            carb.log_error(f"❌ [Exp2] Period calculation error: {e}")
+            import traceback
+            traceback.print_exc()
+            return self.exp2_period
 
     async def _simulation_state_monitor(self):
         while True:
             try:
                 tl = omni.timeline.get_timeline_interface()
-                # 注意：已禁用自动停止逻辑，让用户完全控制仿真
-                
-                # 发送遥测数据（使用实际的物理数据）
-                if tl.is_playing() and self.ws_clients:
-                    # 读取实际的角速度
-                    disk_vel, ring_vel = self._get_actual_angular_velocities()
-                    # 计算角动量 L = I * ω（简化：假设惯性矩与质量成正比）
-                    angular_momentum = self.exp1_disk_mass * disk_vel + self.exp1_ring_mass * ring_vel
-                    
-                    msg = {
-                        "type": "telemetry", 
-                        "data": {
-                            "timestamp": time.time(), 
-                            "disk_angular_velocity": disk_vel,
-                            "ring_angular_velocity": ring_vel,
-                            "angular_momentum": angular_momentum,
-                            "disk_mass": self.exp1_disk_mass,
-                            "ring_mass": self.exp1_ring_mass
+
+                # 始终发送遥测数据（无论仿真是否运行）
+                if self.ws_clients:
+                    current_time = time.time()
+
+                    # 根据当前实验发送不同的遥测数据
+                    if self.current_experiment == "1":
+                        # 实验1：角动量守恒
+                        disk_vel, ring_vel = 0.0, 0.0
+                        if tl.is_playing():
+                            disk_vel, ring_vel = self._get_actual_angular_velocities()
+
+                        # 保留两位小数精度
+                        disk_vel = round(disk_vel, 2)
+                        ring_vel = round(ring_vel, 2)
+
+                        # 计算角动量 L = I * ω
+                        angular_momentum = round(self.exp1_disk_mass * disk_vel + self.exp1_ring_mass * ring_vel, 2)
+
+                        msg = {
+                            "type": "telemetry",
+                            "data": {
+                                "timestamp": current_time,
+                                "disk_angular_velocity": disk_vel,
+                                "ring_angular_velocity": ring_vel,
+                                "angular_momentum": angular_momentum,
+                                "disk_mass": self.exp1_disk_mass,
+                                "ring_mass": self.exp1_ring_mass,
+                                "initial_velocity": round(self.exp1_initial_vel, 2),
+                                "is_running": tl.is_playing()
+                            }
                         }
-                    }
+                    elif self.current_experiment == "2":
+                        # 实验2：大角度单摆（角度单位：度）
+                        angle = 0.0
+                        period = 0.0
+                        if tl.is_playing():
+                            angle = self._get_exp2_angle()
+                            period = self._calculate_exp2_period(angle, current_time)
+
+                        # 度数保留2位小数精度
+                        angle = round(angle, 2)
+                        period = round(period, 2)
+
+                        # 调试日志：每5秒打印一次角度值
+                        if not hasattr(self, '_last_angle_log_time'):
+                            self._last_angle_log_time = 0
+                        if current_time - self._last_angle_log_time >= 5.0:
+                            carb.log_warn(f"📊 [Exp2 Telemetry] Angle={angle}° (range should be -180 to 180)")
+                            self._last_angle_log_time = current_time
+
+                        msg = {
+                            "type": "telemetry",
+                            "data": {
+                                "timestamp": current_time,
+                                "angle": angle,
+                                "period": period,
+                                "initial_angle": self.exp2_initial_angle,
+                                "mass1": self.exp2_mass1,
+                                "mass2": self.exp2_mass2,
+                                "is_running": tl.is_playing()
+                            }
+                        }
+                    else:
+                        # 默认发送空数据
+                        msg = {
+                            "type": "telemetry",
+                            "data": {
+                                "timestamp": current_time,
+                                "is_running": tl.is_playing()
+                            }
+                        }
+
                     for ws in list(self.ws_clients):
-                        if not ws.closed: await ws.send_json(msg)
+                        if not ws.closed:
+                            await ws.send_json(msg)
             except Exception as e:
                 carb.log_warn(f"⚠️ Telemetry error: {e}")
             await asyncio.sleep(config.TELEMETRY_BROADCAST_INTERVAL)
@@ -767,6 +1320,12 @@ class WebRTCServer:
         
         self._monitor_task = asyncio.ensure_future(self._simulation_state_monitor())
         carb.log_info(f"🚀 Server started: HTTP {self.http_port}, WS {self.ws_port}, HostIP: {getattr(config, 'HOST_IP', 'Auto')}")
+
+        # 不要在启动时自动应用实验2参数！
+        # 原因：这会修改 USD 场景中的物理参数（质量、阻尼、关节配置）
+        # 正确做法：只在用户进入实验2时才应用参数（见 line 677: enter_experiment 处理）
+        # await self._apply_exp2_params()
+        # carb.log_info(f"✅ Applied default params: Angle={self.exp2_initial_angle}°, Mass1={self.exp2_mass1}kg, Mass2={self.exp2_mass2}kg")
 
     async def stop(self):
         if self._monitor_task: self._monitor_task.cancel()

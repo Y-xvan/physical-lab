@@ -10,15 +10,15 @@ import os
 import importlib.util  
 
 print("=" * 60)  
-print("🚀 启动 WebRTC 服务器（V3 全局变量修复版）")  
+print("�� 启动 WebRTC 服务器（V3 全局变量修复版）")  
 print("=" * 60)  
 
 # ============================================================================  
-# 1. 🛑 关键修改：手动指定项目路径  
+# 1. �� 关键修改：手动指定项目路径  
 # ============================================================================  
 PROJECT_ROOT = '/home/zhiren/IsaacLab'  
 
-print(f"📂 指定项目目录: {PROJECT_ROOT}")  
+print(f"�� 指定项目目录: {PROJECT_ROOT}")  
 
 if not os.path.exists(PROJECT_ROOT):  
     print(f"❌ 错误: 项目目录不存在: {PROJECT_ROOT}")  
@@ -38,14 +38,17 @@ class _ServerHolder:
 # 将 holder 注册到 sys.modules 中，确保跨脚本执行持久化
 _HOLDER_KEY = '__webrtc_server_holder__'
 if _HOLDER_KEY not in sys.modules:
-    sys.modules[_HOLDER_KEY] = _ServerHolder
+    import types
+    holder_module = types.ModuleType(_HOLDER_KEY)
+    setattr(holder_module, '_ServerHolder', _ServerHolder)
+    sys.modules[_HOLDER_KEY] = holder_module
 else:
-    _ServerHolder = sys.modules[_HOLDER_KEY]
+    _ServerHolder = getattr(sys.modules[_HOLDER_KEY], '_ServerHolder')
 
 async def _cleanup_old_server():
     """安全清理旧服务器实例"""
     if _ServerHolder.instance is not None:
-        print("🛑 检测到旧服务器实例，正在清理...")
+        print("�� 检测到旧服务器实例，正在清理...")
         old_server = _ServerHolder.instance
         try:
             # 关闭所有 PeerConnection
@@ -77,8 +80,8 @@ if PROJECT_ROOT not in sys.path:
     print(f"✅ 已添加路径到 sys.path")  
 
 MODULE_NAME = 'isaac_webrtc_server'  
-MODULE_FILE = os.path.join(PROJECT_ROOT, f'{MODULE_NAME}.py')  
-CONFIG_FILE = os.path.join(PROJECT_ROOT, 'config.py')  
+MODULE_FILE = str(os.path.join(PROJECT_ROOT, f'{MODULE_NAME}.py'))  
+CONFIG_FILE = str(os.path.join(PROJECT_ROOT, 'config.py'))  
 
 if not os.path.exists(MODULE_FILE):  
     raise FileNotFoundError(f"找不到 {MODULE_FILE}")  
@@ -105,6 +108,8 @@ try:
 
     # 动态导入 Server 模块  
     spec = importlib.util.spec_from_file_location(MODULE_NAME, MODULE_FILE)  
+    if spec is None:
+        raise FileNotFoundError(f"Could not create spec for {MODULE_FILE}")
     module = importlib.util.module_from_spec(spec)  
     sys.modules[MODULE_NAME] = module  
     spec.loader.exec_module(module)  
@@ -125,7 +130,7 @@ async def start_server():
     # 先清理旧实例
     await _cleanup_old_server()
     
-    print("\n🔧 正在初始化新服务器...")  
+    print("\n�� 正在初始化新服务器...")  
     try:  
         # 创建新服务器实例并存储到 holder
         server = WebRTCServer(  
@@ -174,7 +179,7 @@ def _setup_monitor(server_instance):
     app = omni.kit.app.get_app()  
     subscription = app.get_update_event_stream().create_subscription_to_pop(on_update)
     _ServerHolder.monitor_subscription = subscription
-    print("👀 状态监控已挂载")  
+    print("�� 状态监控已挂载")  
 
 # ============================================================================  
 # 7. 提供便捷的停止函数

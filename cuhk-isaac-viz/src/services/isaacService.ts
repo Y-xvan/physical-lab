@@ -117,11 +117,11 @@ class IsaacService {
    */
   public disconnect(force: boolean = false) {
     if (!force) {
-      console.log('📌 Keeping WebSocket connection alive');
+      console.log(' Keeping WebSocket connection alive');
       return;  // 不断开连接，保持在线
     }
 
-    console.log('🔌 Disconnecting from Isaac Sim...');
+    console.log(' Disconnecting from Isaac Sim...');
     this.status = ConnectionStatus.DISCONNECTED;
     if (this.simulationInterval) clearInterval(this.simulationInterval);
     if (this.ws) {
@@ -213,7 +213,7 @@ class IsaacService {
         experiment_id: experimentNumber
       };
 
-      console.log('🚀 Entering experiment:', experimentNumber);
+      console.log(' Entering experiment:', experimentNumber);
       console.log('  → Will switch camera to:', `camera/usd${experimentNumber}.py`);
       console.log('  → Will reset physics state');
 
@@ -246,6 +246,56 @@ class IsaacService {
       setTimeout(() => {
         this.ws?.removeEventListener('message', responseHandler);
         resolve(true);  // 即使超时也返回true，让UI继续
+      }, 2000);
+    });
+  }
+
+  /**
+   * 切换相机到指定实验（不改变其他状态）
+   * 用于在 LevelSelect 界面时切换到默认相机视角
+   * @param experimentNumber 实验编号 "1", "2", "3" 等
+   */
+  public async switchCamera(experimentNumber: string): Promise<boolean> {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      console.error('WebSocket not connected');
+      return false;
+    }
+
+    return new Promise((resolve) => {
+      const message = {
+        type: 'switch_camera',
+        experiment_id: experimentNumber
+      };
+
+      console.log(' Switching camera to experiment:', experimentNumber);
+
+      // 监听响应
+      const responseHandler = (event: MessageEvent) => {
+        try {
+          const payload = JSON.parse(event.data);
+          if (payload.type === 'camera_switched' && payload.experiment_id === experimentNumber) {
+            console.log('✅ Camera switched successfully');
+            this.ws?.removeEventListener('message', responseHandler);
+            resolve(true);
+          } else if (payload.type === 'error') {
+            console.error('❌ Failed to switch camera:', payload.message);
+            this.ws?.removeEventListener('message', responseHandler);
+            resolve(false);
+          }
+        } catch (e) {
+          console.error('Failed to parse response', e);
+        }
+      };
+
+      if (this.ws) {
+        this.ws.addEventListener('message', responseHandler);
+        this.ws.send(JSON.stringify(message));
+      }
+
+      // 超时处理
+      setTimeout(() => {
+        this.ws?.removeEventListener('message', responseHandler);
+        resolve(true);
       }, 2000);
     });
   }

@@ -22,6 +22,13 @@ export interface ChartConfig {
   yAxisId: 'left' | 'right';
 }
 
+// 额外指标配置（不显示在图表中，只显示数值）
+export interface MetricConfig {
+  key: string;
+  color: string;
+  label: string;
+}
+
 // 核心实验配置接口
 export interface ExperimentConfig {
   id: string;
@@ -36,6 +43,7 @@ export interface ExperimentConfig {
   // 动态配置
   controls: ControlConfig[];
   chartConfig: ChartConfig[];
+  extraMetrics?: MetricConfig[]; // 额外的数值显示（只显示数值，不在图表中）
 }
 
 // 通用遥测数据 (允许任意键值对)

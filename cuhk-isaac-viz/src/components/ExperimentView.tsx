@@ -71,10 +71,15 @@ const ExperimentView: React.FC<ExperimentViewProps> = ({ config, onBack }) => {
       } else if (control.command === 'reset_env') {
         // 点击 Reset：保存当前数据到历史记录
         if (dataHistory.length > 0) {
+          // 实验2不显示质量信息，其他实验显示
+          const label = config.experimentNumber === '2'
+            ? `Run ${runCounter}`
+            : `Run ${runCounter} (M=${controlValues['disk_mass']?.toFixed(1) || '1.0'}kg)`;
+
           const newRun = {
             id: runCounter,
             data: [...dataHistory],
-            label: `Run ${runCounter} (M=${controlValues['disk_mass']?.toFixed(1) || '1.0'}kg)`
+            label
           };
           setSavedRuns(prev => [...prev, newRun]);
           setRunCounter(prev => prev + 1);
@@ -328,10 +333,15 @@ const ExperimentView: React.FC<ExperimentViewProps> = ({ config, onBack }) => {
           <button
             onClick={() => {
               if (dataHistory.length > 0) {
+                // 实验2不显示质量信息，其他实验显示
+                const label = config.experimentNumber === '2'
+                  ? `Run ${runCounter}`
+                  : `Run ${runCounter} (M=${controlValues['disk_mass']?.toFixed(1) || '1.0'}kg)`;
+
                 const newRun = {
                   id: runCounter,
                   data: [...dataHistory],
-                  label: `Run ${runCounter}`
+                  label
                 };
                 setSavedRuns(prev => [...prev, newRun]);
                 setRunCounter(prev => prev + 1);
@@ -376,84 +386,14 @@ const ExperimentView: React.FC<ExperimentViewProps> = ({ config, onBack }) => {
               className="w-full h-full"
             />
 
-            {/* ========== 左上角悬浮速度曲线窗口 ========== */}
-            <div className="absolute top-4 left-4 w-[420px] bg-white/90 backdrop-blur-md rounded-xl shadow-2xl border border-gray-200/50 overflow-hidden z-20">
-              {/* 标题栏 */}
-              <div className="flex items-center justify-between px-4 py-2.5 bg-gradient-to-r from-blue-600 to-purple-600">
-                <div className="flex items-center gap-2 text-white text-xs font-bold uppercase tracking-wider">
-                  <Activity size={14} />
-                  <span>Velocity Telemetry</span>
-                </div>
-                {/* 实时数据显示 */}
-                <div className="flex gap-3">
-                  {config.chartConfig.map((chart) => (
-                    <div key={chart.key} className="flex items-center gap-1.5">
-                      <div className="w-2 h-2 rounded-full" style={{ backgroundColor: chart.color }}></div>
-                      <span className="text-white/90 text-[10px] font-mono">
-                        {chart.label}: {currentData ? (currentData[chart.key]?.toFixed(2) ?? '--') : '--'}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-              
-              {/* 图表区域 */}
-              <div className="h-[180px] p-2 bg-white/50">
-                <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={dataHistory}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" vertical={false} />
-                    <XAxis dataKey="timestamp" hide />
-                    <YAxis 
-                      yAxisId="left" 
-                      stroke="#6b7280" 
-                      fontSize={9} 
-                      tickFormatter={(val) => val.toFixed(1)}
-                      width={35}
-                    />
-                    <YAxis 
-                      yAxisId="right" 
-                      orientation="right" 
-                      stroke="#6b7280" 
-                      fontSize={9} 
-                      tickFormatter={(val) => val.toFixed(1)}
-                      width={35}
-                    />
-                    <Tooltip
-                      contentStyle={{ 
-                        backgroundColor: 'rgba(255,255,255,0.95)', 
-                        border: '1px solid #e5e7eb', 
-                        fontSize: '11px', 
-                        borderRadius: '8px', 
-                        boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
-                        padding: '8px 12px'
-                      }}
-                      labelStyle={{ display: 'none' }}
-                      itemStyle={{ color: '#374151', padding: '2px 0' }}
-                    />
-                    {config.chartConfig.map(chart => (
-                      <Line
-                        key={chart.key}
-                        yAxisId={chart.yAxisId}
-                        type="monotone"
-                        dataKey={chart.key}
-                        stroke={chart.color}
-                        strokeWidth={2}
-                        dot={false}
-                        isAnimationActive={false}
-                      />
-                    ))}
-                  </LineChart>
-                </ResponsiveContainer>
-              </div>
-            </div>
           </div>
         </div>
 
-        {/* ========== 右侧操作面板 - 暂时隐藏 ========== */}
-        {/* 如需恢复，将下面的 false 改为 true */}
-        {false && (
-        <div className="flex-1 bg-white/90 backdrop-blur-sm border-l border-gray-200 flex flex-col min-w-[350px] shadow-lg overflow-y-auto">
+        {/* ========== 右侧操作面板 ========== */}
+        {true && (
+        <div className="flex-1 bg-white/90 backdrop-blur-sm border-l border-gray-200 flex flex-col min-w-[280px] max-w-[320px] shadow-lg overflow-y-auto">
           <div className="grid grid-cols-2 gap-px bg-gray-200 border-b border-gray-200">
+            {/* 渲染 chartConfig 中的指标 */}
             {config.chartConfig.map((chart) => (
               <div key={chart.key} className="bg-white p-4">
                 <div className="text-gray-600 text-[10px] font-mono mb-1 uppercase tracking-wider flex items-center gap-1 font-semibold">
@@ -461,7 +401,19 @@ const ExperimentView: React.FC<ExperimentViewProps> = ({ config, onBack }) => {
                   {chart.label}
                 </div>
                 <div className="text-xl font-mono text-gray-900 font-bold">
-                  {currentData ? (currentData[chart.key]?.toFixed(2) ?? '--') : '--'}
+                  {currentData ? (currentData[chart.key]?.toFixed(1) ?? '--') : '--'}
+                </div>
+              </div>
+            ))}
+            {/* 渲染 extraMetrics 中的指标（如果有） */}
+            {config.extraMetrics?.map((metric) => (
+              <div key={metric.key} className="bg-white p-4">
+                <div className="text-gray-600 text-[10px] font-mono mb-1 uppercase tracking-wider flex items-center gap-1 font-semibold">
+                  <div className="w-2 h-2 rounded-full shadow-sm" style={{ backgroundColor: metric.color }}></div>
+                  {metric.label}
+                </div>
+                <div className="text-xl font-mono text-gray-900 font-bold">
+                  {currentData ? (currentData[metric.key]?.toFixed(2) ?? '--') : '--'}
                 </div>
               </div>
             ))}
@@ -525,19 +477,26 @@ const ExperimentView: React.FC<ExperimentViewProps> = ({ config, onBack }) => {
 
           <div className="flex-1 p-2 flex flex-col min-h-0 bg-white/50">
             <div className="flex items-center gap-2 text-gray-700 text-xs font-bold p-2 uppercase tracking-wider">
-              <Activity size={14} /> LIVE TELEMETRY
+              <Activity size={14} /> {config.experimentNumber === '2' ? 'Angle' : 'Angular Velocity'}
             </div>
             <div className="flex-1 w-full min-h-[200px]">
               <ResponsiveContainer width="100%" height="100%">
                 <LineChart data={selectedRunId === null ? dataHistory : (savedRuns.find(r => r.id === selectedRunId)?.data || [])}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#d1d5db" vertical={false} />
                   <XAxis dataKey="timestamp" hide />
-                  <YAxis yAxisId="left" stroke="#6b7280" fontSize={10} tickFormatter={(val) => val.toFixed(1)} />
+                  <YAxis
+                    yAxisId="left"
+                    stroke="#6b7280"
+                    fontSize={10}
+                    tickFormatter={(val) => val.toFixed(1)}
+                    domain={config.experimentNumber === '2' ? [-180, 180] : ['auto', 'auto']}
+                  />
                   <YAxis yAxisId="right" orientation="right" stroke="#6b7280" fontSize={10} tickFormatter={(val) => val.toFixed(1)} />
                   <Tooltip
                     contentStyle={{ backgroundColor: '#ffffff', border: '2px solid #e5e7eb', fontSize: '12px', borderRadius: '8px', boxShadow: '0 4px 6px rgba(0,0,0,0.1)' }}
                     labelStyle={{ display: 'none' }}
                     itemStyle={{ color: '#374151' }}
+                    formatter={(value: number) => value.toFixed(1)}
                   />
                   {config.chartConfig.map(chart => (
                     <Line
